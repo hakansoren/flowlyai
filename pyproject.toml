@@ -1,11 +1,11 @@
 [project]
-name = "nanobot-ai"
+name = "flowly-ai"
 version = "0.1.0"
 description = "A lightweight personal AI assistant framework"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
-    {name = "nanobot contributors"}
+    {name = "flowly contributors"}
 ]
 keywords = ["ai", "agent", "chatbot", "assistant"]
 classifiers = [
@@ -39,36 +39,36 @@ dev = [
 ]
 
 [project.scripts]
-nanobot = "nanobot.cli.commands:app"
+flowly = "flowly.cli.commands:app"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["nanobot"]
+packages = ["flowly"]
 
 [tool.hatch.build.targets.wheel.sources]
-"nanobot" = "nanobot"
+"flowly" = "flowly"
 
 # Include non-Python files in skills
 [tool.hatch.build]
 include = [
-    "nanobot/**/*.py",
-    "nanobot/skills/**/*.md",
-    "nanobot/skills/**/*.sh",
+    "flowly/**/*.py",
+    "flowly/skills/**/*.md",
+    "flowly/skills/**/*.sh",
 ]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "nanobot/",
+    "flowly/",
     "bridge/",
     "README.md",
     "LICENSE",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
-"bridge" = "nanobot/bridge"
+"bridge" = "flowly/bridge"
 
 [tool.ruff]
 line-length = 100
