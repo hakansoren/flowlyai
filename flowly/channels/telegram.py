@@ -13,6 +13,7 @@ from flowly.bus.events import InboundMessage, OutboundMessage
 from flowly.bus.queue import MessageBus
 from flowly.channels.base import BaseChannel
 from flowly.config.schema import TelegramConfig
+from flowly.pairing import upsert_pairing_request, read_allow_from_store
 
 
 # Supported image MIME types for Telegram photos
@@ -512,6 +513,92 @@ class TelegramChannel(BaseChannel):
             parse_mode="HTML"
         )
 
+    def _is_sender_allowed(self, user_id: str, username: str | None) -> bool:
+        """Check if sender is allowed via config or pairing store."""
+        dm_policy = getattr(self.config, 'dm_policy', 'pairing')
+
+        # Open mode = allow everyone
+        if dm_policy == "open":
+            return True
+
+        # Check config allow_from
+        config_allow = self.config.allow_from or []
+
+        # Check pairing store allow_from
+        store_allow = read_allow_from_store("telegram")
+
+        # Combine both lists
+        all_allowed = set(config_allow) | set(store_allow)
+
+        # For pairing/allowlist mode, empty list means no one is allowed yet
+        if not all_allowed:
+            return False
+
+        # Check if user_id or username matches
+        if user_id in all_allowed:
+            return True
+        if username and username in all_allowed:
+            return True
+        if username and f"@{username}" in all_allowed:
+            return True
+
+        # Check with telegram: prefix
+        if f"telegram:{user_id}" in all_allowed:
+            return True
+
+        return False
+
+    async def _handle_pairing(self, chat_id: int, user) -> bool:
+        """
+        Handle pairing for unauthorized users.
+
+        Returns True if user is not allowed (message blocked or pairing sent).
+        """
+        user_id = str(user.id)
+        username = user.username
+
+        if self._is_sender_allowed(user_id, username):
+            return False
+
+        dm_policy = getattr(self.config, 'dm_policy', 'pairing')
+
+        # allowlist mode = silently block unauthorized users
+        if dm_policy == "allowlist":
+            logger.debug(f"Blocked unauthorized sender {user_id} (allowlist mode)")
+            return True
+
+        # pairing mode = send pairing code
+        meta = {}
+        if username:
+            meta["username"] = username
+        if user.first_name:
+            meta["first_name"] = user.first_name
+        if user.last_name:
+            meta["last_name"] = user.last_name
+
+        code, created = upsert_pairing_request("telegram", user_id, meta)
+
+        if created and code:
+            # Send pairing instructions
+            await self._app.bot.send_message(
+                chat_id,
+                f"🔐 <b>Flowly: Access Required</b>\n\n"
+                f"Your Telegram ID: <code>{user_id}</code>\n\n"
+                f"Pairing code: <code>{code}</code>\n\n"
+                f"Ask the bot owner to approve:\n"
+                f"<code>flowly pairing approve telegram {code}</code>",
+                parse_mode="HTML"
+            )
+            logger.info(f"Pairing request created for {user_id} ({username}): {code}")
+        elif not code:
+            # Max pending reached
+            await self._app.bot.send_message(
+                chat_id,
+                "⚠️ Too many pending requests. Please try again later."
+            )
+
+        return True
+
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming messages (text, photos, voice, documents)."""
         if not update.message or not update.effective_user:
@@ -520,6 +607,10 @@ class TelegramChannel(BaseChannel):
         message = update.message
         user = update.effective_user
         chat_id = message.chat_id
+
+        # Check pairing / authorization first
+        if await self._handle_pairing(chat_id, user):
+            return  # User not authorized, pairing message sent
 
         # Start typing indicator loop (will continue until response is sent)
         await self._start_typing_loop(chat_id)

@@ -371,6 +371,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "croniter" },
+    { name = "filelock" },
     { name = "httpx" },
     { name = "litellm" },
     { name = "loguru" },
@@ -395,6 +396,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "croniter", specifier = ">=2.0.0" },
+    { name = "filelock", specifier = ">=3.0.0" },
     { name = "httpx", specifier = ">=0.25.0" },
     { name = "litellm", specifier = ">=1.0.0" },
     { name = "loguru", specifier = ">=0.7.0" },

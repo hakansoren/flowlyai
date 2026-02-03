@@ -42,6 +42,7 @@ class TelegramConfig(BaseModel):
     enabled: bool = False
     token: str = ""  # Bot token from @BotFather
     allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs or usernames
+    dm_policy: Literal["open", "pairing", "allowlist"] = "pairing"  # DM access policy
 
 
 class ChannelsConfig(BaseModel):
