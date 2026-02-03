@@ -40,6 +40,7 @@ dev = [
 
 [project.scripts]
 flowly = "flowly.cli.commands:app"
+flowly-hub = "flowly.hub.cli:main"
 
 [build-system]
 requires = ["hatchling"]

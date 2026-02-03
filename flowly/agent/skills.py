@@ -9,32 +9,41 @@ from pathlib import Path
 # Default builtin skills directory (relative to this file)
 BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
 
+# Managed skills directory (installed via flowly-hub)
+MANAGED_SKILLS_DIR = Path.home() / ".flowly" / "skills"
+
 
 class SkillsLoader:
     """
     Loader for agent skills.
-    
+
     Skills are markdown files (SKILL.md) that teach the agent how to use
     specific tools or perform certain tasks.
+
+    Loading priority (highest to lowest):
+    1. Workspace skills (<workspace>/skills/)
+    2. Managed skills (~/.flowly/skills/) - installed via flowly-hub
+    3. Builtin skills (bundled with package)
     """
-    
+
     def __init__(self, workspace: Path, builtin_skills_dir: Path | None = None):
         self.workspace = workspace
         self.workspace_skills = workspace / "skills"
+        self.managed_skills = MANAGED_SKILLS_DIR
         self.builtin_skills = builtin_skills_dir or BUILTIN_SKILLS_DIR
     
     def list_skills(self, filter_unavailable: bool = True) -> list[dict[str, str]]:
         """
         List all available skills.
-        
+
         Args:
             filter_unavailable: If True, filter out skills with unmet requirements.
-        
+
         Returns:
             List of skill info dicts with 'name', 'path', 'source'.
         """
         skills = []
-        
+
         # Workspace skills (highest priority)
         if self.workspace_skills.exists():
             for skill_dir in self.workspace_skills.iterdir():
@@ -42,7 +51,15 @@ class SkillsLoader:
                     skill_file = skill_dir / "SKILL.md"
                     if skill_file.exists():
                         skills.append({"name": skill_dir.name, "path": str(skill_file), "source": "workspace"})
-        
+
+        # Managed skills (installed via flowly-hub)
+        if self.managed_skills.exists():
+            for skill_dir in self.managed_skills.iterdir():
+                if skill_dir.is_dir():
+                    skill_file = skill_dir / "SKILL.md"
+                    if skill_file.exists() and not any(s["name"] == skill_dir.name for s in skills):
+                        skills.append({"name": skill_dir.name, "path": str(skill_file), "source": "managed"})
+
         # Built-in skills
         if self.builtin_skills and self.builtin_skills.exists():
             for skill_dir in self.builtin_skills.iterdir():
@@ -50,7 +67,7 @@ class SkillsLoader:
                     skill_file = skill_dir / "SKILL.md"
                     if skill_file.exists() and not any(s["name"] == skill_dir.name for s in skills):
                         skills.append({"name": skill_dir.name, "path": str(skill_file), "source": "builtin"})
-        
+
         # Filter by requirements
         if filter_unavailable:
             return [s for s in skills if self._check_requirements(self._get_skill_meta(s["name"]))]
@@ -59,24 +76,29 @@ class SkillsLoader:
     def load_skill(self, name: str) -> str | None:
         """
         Load a skill by name.
-        
+
         Args:
             name: Skill name (directory name).
-        
+
         Returns:
             Skill content or None if not found.
         """
-        # Check workspace first
+        # Check workspace first (highest priority)
         workspace_skill = self.workspace_skills / name / "SKILL.md"
         if workspace_skill.exists():
             return workspace_skill.read_text(encoding="utf-8")
-        
-        # Check built-in
+
+        # Check managed skills (installed via flowly-hub)
+        managed_skill = self.managed_skills / name / "SKILL.md"
+        if managed_skill.exists():
+            return managed_skill.read_text(encoding="utf-8")
+
+        # Check built-in (lowest priority)
         if self.builtin_skills:
             builtin_skill = self.builtin_skills / name / "SKILL.md"
             if builtin_skill.exists():
                 return builtin_skill.read_text(encoding="utf-8")
-        
+
         return None
     
     def load_skills_for_context(self, skill_names: list[str]) -> str:
