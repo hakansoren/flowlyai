@@ -109,6 +109,13 @@ class LiteLLMProvider(LLMProvider):
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+
+        # Set app name for OpenRouter dashboard
+        if self.is_openrouter:
+            kwargs["extra_headers"] = {
+                "X-Title": "Flowly",
+                "HTTP-Referer": "https://github.com/pve/flowlyai",
+            }
         
         # Pass api_base directly for custom endpoints (vLLM, etc.)
         if self.api_base:

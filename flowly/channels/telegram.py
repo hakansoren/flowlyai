@@ -128,6 +128,7 @@ class TelegramChannel(BaseChannel):
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._compact_callback: callable | None = None  # Set by gateway
+        self._typing_tasks: dict[int, asyncio.Task] = {}  # Active typing indicators per chat
 
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
@@ -190,6 +191,10 @@ class TelegramChannel(BaseChannel):
         """Stop the Telegram bot."""
         self._running = False
 
+        # Cancel all typing indicator tasks
+        for chat_id in list(self._typing_tasks.keys()):
+            await self._stop_typing(chat_id)
+
         if self._app:
             logger.info("Stopping Telegram bot...")
             await self._app.updater.stop()
@@ -216,6 +221,9 @@ class TelegramChannel(BaseChannel):
         except ValueError:
             logger.error(f"Invalid chat_id: {msg.chat_id}")
             return
+
+        # Stop typing indicator before sending response
+        await self._stop_typing(chat_id)
 
         # Check if we have media to send
         if msg.media:
@@ -388,6 +396,40 @@ class TelegramChannel(BaseChannel):
         """Set the callback for /compact command."""
         self._compact_callback = callback
 
+    async def _send_typing(self, chat_id: int) -> None:
+        """Send typing indicator to a chat."""
+        if not self._app:
+            return
+        try:
+            await self._app.bot.send_chat_action(chat_id=chat_id, action="typing")
+        except Exception as e:
+            logger.debug(f"Failed to send typing indicator: {e}")
+
+    async def _start_typing_loop(self, chat_id: int) -> None:
+        """Start a background task that sends typing indicators every 4 seconds."""
+        # Cancel existing typing task for this chat if any
+        await self._stop_typing(chat_id)
+
+        async def typing_loop():
+            try:
+                while True:
+                    await self._send_typing(chat_id)
+                    await asyncio.sleep(4)  # Telegram typing expires after ~5 seconds
+            except asyncio.CancelledError:
+                pass
+
+        self._typing_tasks[chat_id] = asyncio.create_task(typing_loop())
+
+    async def _stop_typing(self, chat_id: int) -> None:
+        """Stop the typing indicator loop for a chat."""
+        task = self._typing_tasks.pop(chat_id, None)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
         if not update.message or not update.effective_user:
@@ -477,6 +519,9 @@ class TelegramChannel(BaseChannel):
         message = update.message
         user = update.effective_user
         chat_id = message.chat_id
+
+        # Start typing indicator loop (will continue until response is sent)
+        await self._start_typing_loop(chat_id)
 
         # Use stable numeric ID, but keep username for allowlist compatibility
         sender_id = str(user.id)
