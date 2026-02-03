@@ -122,13 +122,14 @@ class TelegramChannel(BaseChannel):
         BotCommand("help", "Show available commands"),
     ]
 
-    def __init__(self, config: TelegramConfig, bus: MessageBus):
+    def __init__(self, config: TelegramConfig, bus: MessageBus, groq_api_key: str | None = None):
         super().__init__(config, bus)
         self.config: TelegramConfig = config
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._compact_callback: callable | None = None  # Set by gateway
         self._typing_tasks: dict[int, asyncio.Task] = {}  # Active typing indicators per chat
+        self._groq_api_key = groq_api_key  # For voice transcription
 
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
@@ -572,7 +573,24 @@ class TelegramChannel(BaseChannel):
                 await file.download_to_drive(str(file_path))
 
                 media_paths.append(str(file_path))
-                content_parts.append(f"[{media_type}: {file_path}]")
+
+                # Transcribe voice/audio messages using Groq Whisper
+                if media_type in ("voice", "audio") and self._groq_api_key:
+                    try:
+                        from flowly.providers.transcription import GroqTranscriptionProvider
+                        transcriber = GroqTranscriptionProvider(self._groq_api_key)
+                        transcript = await transcriber.transcribe(file_path)
+                        if transcript:
+                            content_parts.append(f"[transcription: {transcript}]")
+                            logger.info(f"Transcribed {media_type}: {transcript[:50]}...")
+                        else:
+                            content_parts.append(f"[{media_type}: {file_path}]")
+                    except Exception as e:
+                        logger.error(f"Transcription failed: {e}")
+                        content_parts.append(f"[{media_type}: {file_path}]")
+                else:
+                    content_parts.append(f"[{media_type}: {file_path}]")
+
                 logger.debug(f"Downloaded {media_type} to {file_path}")
             except Exception as e:
                 logger.error(f"Failed to download media: {e}")
