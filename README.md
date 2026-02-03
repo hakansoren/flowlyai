@@ -23,47 +23,40 @@
 
 ## 📦 Install
 
-**Install nanobot dependency**
-
-```bash
-pip install nanobot-ai
-```
-
-**Clone Flowly**
-
 ```bash
 git clone https://github.com/hakansoren/flowlyai.git
 cd flowlyai
+uv sync
 ```
 
 ## 🚀 Quick Start
 
 > [!TIP]
-> Set your API key in `~/.nanobot/config.json`.
-> Get API keys: [OpenRouter](https://openrouter.ai/keys) (LLM) · [Brave Search](https://brave.com/search/api/) (optional, for web search)
+> Set your API key in `~/.flowly/config.json`.
+> Get API keys: [OpenRouter](https://openrouter.ai/keys) (LLM) · [Groq](https://console.groq.com/keys) (voice) · [Brave Search](https://brave.com/search/api/) (web search)
 
 **1. Initialize**
 
 ```bash
-nanobot onboard
+uv run flowly onboard
 ```
 
-**2. Configure** (`~/.nanobot/config.json`)
+**2. Configure** (`~/.flowly/config.json`)
 
 ```json
 {
   "providers": {
     "openrouter": {
-      "apiKey": "sk-or-v1-xxx"
+      "api_key": "sk-or-v1-xxx"
+    },
+    "groq": {
+      "api_key": "gsk_xxx"
     }
   },
   "agents": {
     "defaults": {
-      "model": "anthropic/claude-opus-4-5"
+      "model": "anthropic/claude-sonnet-4-5"
     }
-  },
-  "webSearch": {
-    "apiKey": "BSA-xxx"
   }
 }
 ```
@@ -71,7 +64,7 @@ nanobot onboard
 **3. Chat**
 
 ```bash
-nanobot agent -m "What is 2+2?"
+uv run flowly agent -m "What is 2+2?"
 ```
 
 ## 💬 Chat Apps
@@ -110,7 +103,7 @@ Talk to your Flowly through Telegram or WhatsApp — anytime, anywhere.
 **3. Run**
 
 ```bash
-nanobot gateway
+uv run flowly gateway
 ```
 
 </details>
@@ -123,7 +116,7 @@ Requires **Node.js ≥18**.
 **1. Link device**
 
 ```bash
-nanobot channels login
+uv run flowly channels login
 # Scan QR with WhatsApp → Settings → Linked Devices
 ```
 
@@ -144,10 +137,10 @@ nanobot channels login
 
 ```bash
 # Terminal 1
-nanobot channels login
+uv run flowly channels login
 
 # Terminal 2
-nanobot gateway
+uv run flowly gateway
 ```
 
 </details>
@@ -156,13 +149,13 @@ nanobot gateway
 
 | Command | Description |
 |---------|-------------|
-| `nanobot onboard` | Initialize config & workspace |
-| `nanobot agent -m "..."` | Chat with the agent |
-| `nanobot agent` | Interactive chat mode |
-| `nanobot gateway` | Start the gateway |
-| `nanobot status` | Show status |
-| `nanobot channels login` | Link WhatsApp (scan QR) |
-| `nanobot channels status` | Show channel status |
+| `flowly onboard` | Initialize config & workspace |
+| `flowly agent -m "..."` | Chat with the agent |
+| `flowly agent` | Interactive chat mode |
+| `flowly gateway` | Start the gateway |
+| `flowly status` | Show status |
+| `flowly channels login` | Link WhatsApp (scan QR) |
+| `flowly channels status` | Show channel status |
 
 ---
 
