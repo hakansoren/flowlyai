@@ -18,8 +18,10 @@ from flowly.agent.tools.web import WebSearchTool, WebFetchTool
 from flowly.agent.tools.message import MessageTool
 from flowly.agent.tools.screenshot import ScreenshotTool
 from flowly.agent.tools.spawn import SpawnTool
+from flowly.agent.tools.cron import CronTool
 from flowly.agent.subagent import SubagentManager
 from flowly.session.manager import SessionManager
+from flowly.cron.service import CronService
 
 
 class AgentLoop:
@@ -41,7 +43,8 @@ class AgentLoop:
         workspace: Path,
         model: str | None = None,
         max_iterations: int = 20,
-        brave_api_key: str | None = None
+        brave_api_key: str | None = None,
+        cron_service: CronService | None = None
     ):
         self.bus = bus
         self.provider = provider
@@ -49,7 +52,8 @@ class AgentLoop:
         self.model = model or provider.get_default_model()
         self.max_iterations = max_iterations
         self.brave_api_key = brave_api_key
-        
+        self.cron_service = cron_service
+
         self.context = ContextBuilder(workspace)
         self.sessions = SessionManager(workspace)
         self.tools = ToolRegistry()
@@ -60,7 +64,7 @@ class AgentLoop:
             model=self.model,
             brave_api_key=brave_api_key,
         )
-        
+
         self._running = False
         self._register_default_tools()
     
@@ -89,6 +93,10 @@ class AgentLoop:
         # Spawn tool (for subagents)
         spawn_tool = SpawnTool(manager=self.subagents)
         self.tools.register(spawn_tool)
+
+        # Cron tool (for scheduling)
+        cron_tool = CronTool(cron_service=self.cron_service)
+        self.tools.register(cron_tool)
     
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
@@ -123,6 +131,13 @@ class AgentLoop:
         """Stop the agent loop."""
         self._running = False
         logger.info("Agent loop stopping")
+
+    def set_cron_service(self, cron_service: CronService) -> None:
+        """Set the cron service for the cron tool."""
+        self.cron_service = cron_service
+        cron_tool = self.tools.get("cron")
+        if isinstance(cron_tool, CronTool):
+            cron_tool.set_cron_service(cron_service)
     
     async def _process_message(self, msg: InboundMessage) -> OutboundMessage | None:
         """

@@ -193,17 +193,22 @@ def gateway(
         default_model=config.agents.defaults.model
     )
 
-    # Create agent
+    # Create cron service first (agent needs it)
+    cron_store_path = get_data_dir() / "cron" / "jobs.json"
+    cron = CronService(cron_store_path)
+
+    # Create agent with cron service
     agent = AgentLoop(
         bus=bus,
         provider=provider,
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
         max_iterations=config.agents.defaults.max_tool_iterations,
-        brave_api_key=config.tools.web.search.api_key or None
+        brave_api_key=config.tools.web.search.api_key or None,
+        cron_service=cron
     )
 
-    # Create cron service
+    # Set cron job callback (needs agent to be created first)
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
         response = await agent.process_direct(
@@ -220,8 +225,7 @@ def gateway(
             ))
         return response
 
-    cron_store_path = get_data_dir() / "cron" / "jobs.json"
-    cron = CronService(cron_store_path, on_job=on_cron_job)
+    cron.on_job = on_cron_job
 
     # Create heartbeat service
     async def on_heartbeat(prompt: str) -> str:
@@ -280,10 +284,11 @@ def agent(
     session_id: str = typer.Option("cli:default", "--session", "-s", help="Session ID"),
 ):
     """Interact with the agent directly."""
-    from flowly.config.loader import load_config
+    from flowly.config.loader import load_config, get_data_dir
     from flowly.bus.queue import MessageBus
     from flowly.providers.litellm_provider import LiteLLMProvider
     from flowly.agent.loop import AgentLoop
+    from flowly.cron.service import CronService
 
     config = load_config()
 
@@ -301,11 +306,16 @@ def agent(
         default_model=config.agents.defaults.model
     )
 
+    # Create cron service for agent CLI
+    cron_store_path = get_data_dir() / "cron" / "jobs.json"
+    cron = CronService(cron_store_path)
+
     agent_loop = AgentLoop(
         bus=bus,
         provider=provider,
         workspace=config.workspace_path,
-        brave_api_key=config.tools.web.search.api_key or None
+        brave_api_key=config.tools.web.search.api_key or None,
+        cron_service=cron
     )
 
     if message:
