@@ -211,18 +211,30 @@ def gateway(
     # Set cron job callback (needs agent to be created first)
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
-        response = await agent.process_direct(
-            job.payload.message,
-            session_key=f"cron:{job.id}"
-        )
-        # Optionally deliver to channel
-        if job.payload.deliver and job.payload.to:
-            from flowly.bus.events import OutboundMessage
-            await bus.publish_outbound(OutboundMessage(
-                channel=job.payload.channel or "whatsapp",
-                chat_id=job.payload.to,
-                content=response or ""
-            ))
+        # Build the prompt - if delivery is requested, tell agent to send message
+        prompt = job.payload.message
+
+        if job.payload.deliver:
+            channel = job.payload.channel or "telegram"
+            if job.payload.to:
+                # We have a specific target - send directly after agent processes
+                response = await agent.process_direct(prompt, session_key=f"cron:{job.id}")
+                from flowly.bus.events import OutboundMessage
+                await bus.publish_outbound(OutboundMessage(
+                    channel=channel,
+                    chat_id=job.payload.to,
+                    content=response or ""
+                ))
+                return response
+            else:
+                # No specific target - ask agent to use message tool
+                prompt = (
+                    f"[Scheduled Task: {job.name}]\n"
+                    f"{job.payload.message}\n\n"
+                    f"After completing the task, send the result to the user using the message tool."
+                )
+
+        response = await agent.process_direct(prompt, session_key=f"cron:{job.id}")
         return response
 
     cron.on_job = on_cron_job
