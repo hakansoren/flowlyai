@@ -152,10 +152,17 @@ class CronTool(Tool):
             cron_service: CronService instance (will be set by agent loop).
         """
         self._cron_service = cron_service
+        self._default_channel: str = ""
+        self._default_chat_id: str = ""
 
     def set_cron_service(self, service: CronService) -> None:
         """Set the cron service instance."""
         self._cron_service = service
+
+    def set_context(self, channel: str, chat_id: str) -> None:
+        """Set the current context for delivery defaults."""
+        self._default_channel = channel
+        self._default_chat_id = chat_id
 
     @property
     def name(self) -> str:
@@ -322,6 +329,13 @@ class CronTool(Tool):
                 "Use: 'every 30m', 'at 14:30', 'at tomorrow 09:00', "
                 "or cron expression '0 9 * * *'"
             )
+
+        # Use defaults if deliver is true but no target specified
+        if deliver:
+            if not channel:
+                channel = self._default_channel or None
+            if not to:
+                to = self._default_chat_id or None
 
         # Add the job
         job = self._cron_service.add_job(
