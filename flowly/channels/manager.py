@@ -120,6 +120,12 @@ class ChannelManager:
     def get_channel(self, name: str) -> BaseChannel | None:
         """Get a channel by name."""
         return self.channels.get(name)
+
+    def set_compact_callback(self, callback: callable) -> None:
+        """Set the compaction callback for all channels that support it."""
+        for channel in self.channels.values():
+            if hasattr(channel, "set_compact_callback"):
+                channel.set_compact_callback(callback)
     
     def get_status(self) -> dict[str, Any]:
         """Get status of all channels."""

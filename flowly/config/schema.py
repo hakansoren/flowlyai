@@ -1,8 +1,33 @@
 """Configuration schema using Pydantic."""
 
 from pathlib import Path
+from typing import Literal
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
+
+
+class MemoryFlushConfig(BaseModel):
+    """Pre-compaction memory flush configuration."""
+    enabled: bool = True
+    soft_threshold_tokens: int = 4000
+    prompt: str = (
+        "Pre-compaction memory flush. "
+        "Store durable memories now (use memory/YYYY-MM-DD.md). "
+        "If nothing to store, reply with NO_REPLY."
+    )
+    system_prompt: str = (
+        "Pre-compaction memory flush turn. "
+        "The session is near auto-compaction; capture durable memories to disk."
+    )
+
+
+class CompactionConfig(BaseModel):
+    """Context compaction configuration."""
+    mode: Literal["default", "safeguard"] = "safeguard"
+    reserve_tokens_floor: int = 20000
+    max_history_share: float = 0.5  # 0.1-0.9
+    context_window: int = 128000
+    memory_flush: MemoryFlushConfig = Field(default_factory=MemoryFlushConfig)
 
 
 class WhatsAppConfig(BaseModel):
@@ -32,6 +57,8 @@ class AgentDefaults(BaseModel):
     max_tokens: int = 8192
     temperature: float = 0.7
     max_tool_iterations: int = 20
+    context_messages: int = 100  # Max messages to include in context
+    compaction: CompactionConfig = Field(default_factory=CompactionConfig)
 
 
 class AgentsConfig(BaseModel):

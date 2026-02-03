@@ -6,10 +6,10 @@ import re
 from pathlib import Path
 
 from loguru import logger
-from telegram import Update, InputFile
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram import Update, InputFile, BotCommand
+from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 
-from flowly.bus.events import OutboundMessage
+from flowly.bus.events import InboundMessage, OutboundMessage
 from flowly.bus.queue import MessageBus
 from flowly.channels.base import BaseChannel
 from flowly.config.schema import TelegramConfig
@@ -115,11 +115,19 @@ class TelegramChannel(BaseChannel):
 
     name = "telegram"
 
+    # Native bot commands
+    NATIVE_COMMANDS = [
+        BotCommand("compact", "Summarize conversation history"),
+        BotCommand("clear", "Clear session history"),
+        BotCommand("help", "Show available commands"),
+    ]
+
     def __init__(self, config: TelegramConfig, bus: MessageBus):
         super().__init__(config, bus)
         self.config: TelegramConfig = config
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
+        self._compact_callback: callable | None = None  # Set by gateway
 
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
@@ -145,9 +153,11 @@ class TelegramChannel(BaseChannel):
             )
         )
 
-        # Add /start command handler
-        from telegram.ext import CommandHandler
+        # Add command handlers
         self._app.add_handler(CommandHandler("start", self._on_start))
+        self._app.add_handler(CommandHandler("compact", self._on_compact))
+        self._app.add_handler(CommandHandler("clear", self._on_clear))
+        self._app.add_handler(CommandHandler("help", self._on_help))
 
         logger.info("Starting Telegram bot (polling mode)...")
 
@@ -158,6 +168,13 @@ class TelegramChannel(BaseChannel):
         # Get bot info
         bot_info = await self._app.bot.get_me()
         logger.info(f"Telegram bot @{bot_info.username} connected")
+
+        # Register bot commands (shows in Telegram's command menu)
+        try:
+            await self._app.bot.set_my_commands(self.NATIVE_COMMANDS)
+            logger.info(f"Registered {len(self.NATIVE_COMMANDS)} native commands")
+        except Exception as e:
+            logger.warning(f"Failed to set bot commands: {e}")
 
         # Start polling (this runs until stopped)
         await self._app.updater.start_polling(
@@ -367,6 +384,10 @@ class TelegramChannel(BaseChannel):
         except Exception as e:
             logger.error(f"Error sending document {doc_path}: {e}")
 
+    def set_compact_callback(self, callback: callable) -> None:
+        """Set the callback for /compact command."""
+        self._compact_callback = callback
+
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
         if not update.message or not update.effective_user:
@@ -374,8 +395,78 @@ class TelegramChannel(BaseChannel):
 
         user = update.effective_user
         await update.message.reply_text(
-            f"Hi {user.first_name}! I'm Flowly.\n\n"
-            "Send me a message and I'll respond!"
+            f"Hi {user.first_name}! I'm Flowly 🐈\n\n"
+            "Send me a message and I'll respond!\n\n"
+            "Commands:\n"
+            "/compact - Summarize conversation\n"
+            "/clear - Clear history\n"
+            "/help - Show help"
+        )
+
+    async def _on_compact(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /compact command."""
+        if not update.message or not update.effective_user:
+            return
+
+        chat_id = update.message.chat_id
+        user = update.effective_user
+
+        # Get optional custom instructions from command args
+        custom_instructions = " ".join(context.args) if context.args else None
+
+        if self._compact_callback:
+            await update.message.reply_text("⚙️ Compacting conversation history...")
+            try:
+                session_key = f"telegram:{chat_id}"
+                result = await self._compact_callback(session_key, custom_instructions)
+
+                if result.get("success"):
+                    await update.message.reply_text(
+                        f"✅ {result['message']}\n"
+                        f"({result['tokens_before']} → {result['tokens_after']} tokens)\n\n"
+                        f"📝 Summary:\n{result.get('summary_preview', '')}"
+                    )
+                else:
+                    await update.message.reply_text(f"⚠️ {result.get('message', 'Compaction failed')}")
+            except Exception as e:
+                logger.error(f"Compact command failed: {e}")
+                await update.message.reply_text(f"❌ Error: {str(e)}")
+        else:
+            await update.message.reply_text("⚠️ Compaction not available")
+
+    async def _on_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /clear command."""
+        if not update.message or not update.effective_user:
+            return
+
+        chat_id = update.message.chat_id
+
+        # Forward as a special message to be handled by agent loop
+        await self._handle_message(
+            sender_id=str(update.effective_user.id),
+            chat_id=str(chat_id),
+            content="/clear",
+            metadata={"is_command": True, "command": "clear"}
+        )
+
+        await update.message.reply_text("✅ Session history cleared")
+
+    async def _on_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /help command."""
+        if not update.message:
+            return
+
+        await update.message.reply_text(
+            "🐈 <b>Flowly Commands</b>\n\n"
+            "<b>/compact</b> [instructions]\n"
+            "Summarize conversation history to free up context space.\n"
+            "Example: <code>/compact Focus on technical decisions</code>\n\n"
+            "<b>/clear</b>\n"
+            "Clear the current session history.\n\n"
+            "<b>/help</b>\n"
+            "Show this help message.\n\n"
+            "💡 <i>Just send a message to chat normally!</i>",
+            parse_mode="HTML"
         )
 
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -197,6 +197,22 @@ def gateway(
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
     cron = CronService(cron_store_path)
 
+    # Build compaction config from settings
+    from flowly.compaction.types import CompactionConfig, MemoryFlushConfig
+    compaction_cfg = config.agents.defaults.compaction
+    compaction_config = CompactionConfig(
+        mode=compaction_cfg.mode,
+        reserve_tokens_floor=compaction_cfg.reserve_tokens_floor,
+        max_history_share=compaction_cfg.max_history_share,
+        context_window=compaction_cfg.context_window,
+        memory_flush=MemoryFlushConfig(
+            enabled=compaction_cfg.memory_flush.enabled,
+            soft_threshold_tokens=compaction_cfg.memory_flush.soft_threshold_tokens,
+            prompt=compaction_cfg.memory_flush.prompt,
+            system_prompt=compaction_cfg.memory_flush.system_prompt,
+        ),
+    )
+
     # Create agent with cron service
     agent = AgentLoop(
         bus=bus,
@@ -205,7 +221,9 @@ def gateway(
         model=config.agents.defaults.model,
         max_iterations=config.agents.defaults.max_tool_iterations,
         brave_api_key=config.tools.web.search.api_key or None,
-        cron_service=cron
+        cron_service=cron,
+        context_messages=config.agents.defaults.context_messages,
+        compaction_config=compaction_config,
     )
 
     # Set cron job callback (needs agent to be created first)
@@ -253,6 +271,13 @@ def gateway(
 
     # Create channel manager
     channels = ChannelManager(config, bus)
+
+    # Set up compact callback for channels
+    async def on_compact(session_key: str, instructions: str | None = None) -> dict:
+        """Handle /compact command from channels."""
+        return await agent.compact_session(session_key, instructions)
+
+    channels.set_compact_callback(on_compact)
 
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
@@ -322,24 +347,60 @@ def agent(
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
     cron = CronService(cron_store_path)
 
+    # Build compaction config
+    from flowly.compaction.types import CompactionConfig, MemoryFlushConfig
+    compaction_cfg = config.agents.defaults.compaction
+    compaction_config = CompactionConfig(
+        mode=compaction_cfg.mode,
+        reserve_tokens_floor=compaction_cfg.reserve_tokens_floor,
+        max_history_share=compaction_cfg.max_history_share,
+        context_window=compaction_cfg.context_window,
+        memory_flush=MemoryFlushConfig(
+            enabled=compaction_cfg.memory_flush.enabled,
+            soft_threshold_tokens=compaction_cfg.memory_flush.soft_threshold_tokens,
+            prompt=compaction_cfg.memory_flush.prompt,
+            system_prompt=compaction_cfg.memory_flush.system_prompt,
+        ),
+    )
+
     agent_loop = AgentLoop(
         bus=bus,
         provider=provider,
         workspace=config.workspace_path,
         brave_api_key=config.tools.web.search.api_key or None,
-        cron_service=cron
+        cron_service=cron,
+        context_messages=config.agents.defaults.context_messages,
+        compaction_config=compaction_config,
     )
 
-    if message:
-        # Single message mode
-        async def run_once():
-            response = await agent_loop.process_direct(message, session_id)
-            console.print(f"\n{__logo__} {response}")
+    async def handle_compact(instructions: str | None = None) -> None:
+        """Handle /compact command."""
+        console.print("[cyan]⚙️ Compacting conversation history...[/cyan]")
+        result = await agent_loop.compact_session(session_id, instructions)
+        if result["success"]:
+            console.print(
+                f"[green]✓[/green] {result['message']} "
+                f"({result['tokens_before']} → {result['tokens_after']} tokens)"
+            )
+            console.print(f"\n[dim]Summary preview:[/dim]\n{result['summary_preview']}")
+        else:
+            console.print(f"[yellow]{result['message']}[/yellow]")
 
-        asyncio.run(run_once())
+    if message:
+        # Single message mode - check for /compact
+        if message.strip().startswith("/compact"):
+            parts = message.strip().split(" ", 1)
+            instructions = parts[1] if len(parts) > 1 else None
+            asyncio.run(handle_compact(instructions))
+        else:
+            async def run_once():
+                response = await agent_loop.process_direct(message, session_id)
+                console.print(f"\n{__logo__} {response}")
+            asyncio.run(run_once())
     else:
         # Interactive mode
-        console.print(f"{__logo__} Interactive mode (Ctrl+C to exit)\n")
+        console.print(f"{__logo__} Interactive mode (Ctrl+C to exit)")
+        console.print("[dim]Commands: /compact [instructions], /clear, /quit[/dim]\n")
 
         async def run_interactive():
             while True:
@@ -347,6 +408,32 @@ def agent(
                     user_input = console.input("[bold blue]You:[/bold blue] ")
                     if not user_input.strip():
                         continue
+
+                    # Handle slash commands
+                    if user_input.strip().startswith("/"):
+                        cmd_parts = user_input.strip().split(" ", 1)
+                        cmd = cmd_parts[0].lower()
+                        args = cmd_parts[1] if len(cmd_parts) > 1 else None
+
+                        if cmd == "/compact":
+                            await handle_compact(args)
+                            continue
+                        elif cmd == "/clear":
+                            session = agent_loop.sessions.get_or_create(session_id)
+                            session.clear()
+                            agent_loop.sessions.save(session)
+                            console.print("[green]✓[/green] Session cleared")
+                            continue
+                        elif cmd in ("/quit", "/exit", "/q"):
+                            console.print("Goodbye!")
+                            break
+                        elif cmd == "/help":
+                            console.print("\n[bold]Available commands:[/bold]")
+                            console.print("  /compact [instructions] - Summarize conversation history")
+                            console.print("  /clear                  - Clear session history")
+                            console.print("  /quit                   - Exit interactive mode")
+                            console.print("  /help                   - Show this help\n")
+                            continue
 
                     response = await agent_loop.process_direct(user_input, session_id)
                     console.print(f"\n{__logo__} {response}\n")
