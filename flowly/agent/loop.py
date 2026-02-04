@@ -25,6 +25,7 @@ from flowly.cron.service import CronService
 from flowly.compaction.service import CompactionService
 from flowly.compaction.types import CompactionConfig, MemoryFlushConfig
 from flowly.compaction.estimator import estimate_messages_tokens
+from flowly.exec.types import ExecConfig
 
 
 class AgentLoop:
@@ -50,6 +51,7 @@ class AgentLoop:
         cron_service: CronService | None = None,
         context_messages: int = 100,
         compaction_config: CompactionConfig | None = None,
+        exec_config: ExecConfig | None = None,
     ):
         self.bus = bus
         self.provider = provider
@@ -78,6 +80,9 @@ class AgentLoop:
             config=compaction_config,
         )
 
+        # Exec config
+        self.exec_config = exec_config or ExecConfig()
+
         self._running = False
         self._register_default_tools()
     
@@ -89,8 +94,12 @@ class AgentLoop:
         self.tools.register(EditFileTool())
         self.tools.register(ListDirTool())
         
-        # Shell tool
-        self.tools.register(ExecTool(working_dir=str(self.workspace)))
+        # Shell tool (secure)
+        from flowly.agent.tools.shell import SecureExecTool
+        self.tools.register(SecureExecTool(
+            config=self.exec_config,
+            working_dir=str(self.workspace),
+        ))
         
         # Web tools
         self.tools.register(WebSearchTool(api_key=self.brave_api_key))

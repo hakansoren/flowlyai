@@ -250,6 +250,16 @@ def gateway(
         ),
     )
 
+    # Build exec config
+    from flowly.exec.types import ExecConfig
+    exec_cfg = config.tools.exec
+    exec_config = ExecConfig(
+        enabled=exec_cfg.enabled,
+        timeout_seconds=exec_cfg.timeout_seconds,
+        max_output_chars=exec_cfg.max_output_chars,
+        approval_timeout_seconds=exec_cfg.approval_timeout_seconds,
+    )
+
     # Create agent with cron service
     agent = AgentLoop(
         bus=bus,
@@ -261,6 +271,7 @@ def gateway(
         cron_service=cron,
         context_messages=config.agents.defaults.context_messages,
         compaction_config=compaction_config,
+        exec_config=exec_config,
     )
 
     # Set cron job callback (needs agent to be created first)
@@ -400,6 +411,16 @@ def agent(
         ),
     )
 
+    # Build exec config
+    from flowly.exec.types import ExecConfig
+    exec_cfg = config.tools.exec
+    exec_config = ExecConfig(
+        enabled=exec_cfg.enabled,
+        timeout_seconds=exec_cfg.timeout_seconds,
+        max_output_chars=exec_cfg.max_output_chars,
+        approval_timeout_seconds=exec_cfg.approval_timeout_seconds,
+    )
+
     agent_loop = AgentLoop(
         bus=bus,
         provider=provider,
@@ -408,6 +429,7 @@ def agent(
         cron_service=cron,
         context_messages=config.agents.defaults.context_messages,
         compaction_config=compaction_config,
+        exec_config=exec_config,
     )
 
     async def handle_compact(instructions: str | None = None) -> None:
@@ -845,6 +867,135 @@ def skills_search(
         table.add_row(skill.slug, desc)
 
     console.print(table)
+
+
+# ============================================================================
+# Exec Approvals Commands
+# ============================================================================
+
+approvals_app = typer.Typer(help="Manage command execution approvals")
+app.add_typer(approvals_app, name="approvals")
+
+
+@approvals_app.command("status")
+def approvals_status():
+    """Show exec approvals configuration."""
+    from flowly.exec.approvals import ExecApprovalStore
+
+    store = ExecApprovalStore()
+    config = store.load()
+
+    console.print("\n[bold cyan]Exec Approvals Configuration[/bold cyan]")
+    console.print("─" * 40)
+    console.print(f"Security: [cyan]{config.security}[/cyan]")
+    console.print(f"Ask mode: [cyan]{config.ask}[/cyan]")
+    console.print(f"Ask fallback: [cyan]{config.ask_fallback}[/cyan]")
+    console.print(f"Allowlist entries: [cyan]{len(config.allowlist)}[/cyan]")
+
+    if config.security == "deny":
+        console.print("\n[yellow]⚠️  Command execution is currently DENIED[/yellow]")
+        console.print("[dim]Run 'flowly approvals set --security allowlist' to enable[/dim]")
+
+
+@approvals_app.command("set")
+def approvals_set(
+    security: str = typer.Option(None, "--security", "-s", help="Security mode: deny, allowlist, full"),
+    ask: str = typer.Option(None, "--ask", "-a", help="Ask mode: off, on-miss, always"),
+):
+    """Update exec approvals configuration."""
+    from flowly.exec.approvals import ExecApprovalStore
+
+    store = ExecApprovalStore()
+    config = store.load()
+
+    if security:
+        if security not in ("deny", "allowlist", "full"):
+            console.print(f"[red]Invalid security mode: {security}[/red]")
+            raise typer.Exit(1)
+        config.security = security
+        console.print(f"[green]✓[/green] Security set to [cyan]{security}[/cyan]")
+
+    if ask:
+        if ask not in ("off", "on-miss", "always"):
+            console.print(f"[red]Invalid ask mode: {ask}[/red]")
+            raise typer.Exit(1)
+        config.ask = ask
+        console.print(f"[green]✓[/green] Ask mode set to [cyan]{ask}[/cyan]")
+
+    store.save()
+
+
+@approvals_app.command("list")
+def approvals_list():
+    """List allowlist entries."""
+    from flowly.exec.approvals import ExecApprovalStore
+
+    store = ExecApprovalStore()
+    config = store.load()
+
+    if not config.allowlist:
+        console.print("[dim]No allowlist entries.[/dim]")
+        console.print("[dim]Commands will require approval (if ask mode is on-miss or always)[/dim]")
+        return
+
+    table = Table(title="Exec Allowlist")
+    table.add_column("Pattern", style="cyan")
+    table.add_column("Last Used")
+    table.add_column("Command")
+
+    import time
+    for entry in config.allowlist:
+        last_used = ""
+        if entry.last_used_at:
+            last_used = time.strftime("%Y-%m-%d %H:%M", time.localtime(entry.last_used_at / 1000))
+        cmd = entry.last_used_command or ""
+        if len(cmd) > 40:
+            cmd = cmd[:40] + "..."
+        table.add_row(entry.pattern, last_used, cmd)
+
+    console.print(table)
+
+
+@approvals_app.command("add")
+def approvals_add(
+    pattern: str = typer.Argument(..., help="Path pattern to allow (supports glob)"),
+):
+    """Add a pattern to the allowlist."""
+    from flowly.exec.approvals import ExecApprovalStore
+
+    store = ExecApprovalStore()
+    store.load()
+    store.add_to_allowlist(pattern)
+
+    console.print(f"[green]✓[/green] Added [cyan]{pattern}[/cyan] to allowlist")
+
+
+@approvals_app.command("remove")
+def approvals_remove(
+    pattern: str = typer.Argument(..., help="Pattern to remove"),
+):
+    """Remove a pattern from the allowlist."""
+    from flowly.exec.approvals import ExecApprovalStore
+
+    store = ExecApprovalStore()
+    store.load()
+
+    if store.remove_from_allowlist(pattern):
+        console.print(f"[green]✓[/green] Removed [cyan]{pattern}[/cyan] from allowlist")
+    else:
+        console.print(f"[yellow]Pattern not found: {pattern}[/yellow]")
+
+
+@approvals_app.command("safe-bins")
+def approvals_safe_bins():
+    """List safe bins that are always allowed."""
+    from flowly.exec.safety import DEFAULT_SAFE_BINS
+
+    console.print("\n[bold]Safe Bins (always allowed for stdin operations):[/bold]")
+    for bin_name in sorted(DEFAULT_SAFE_BINS):
+        console.print(f"  • {bin_name}")
+    console.print("\n[dim]These commands are allowed without explicit allowlist entry[/dim]")
+    console.print("[dim]when they don't reference files as arguments.[/dim]")
 
 
 # ============================================================================

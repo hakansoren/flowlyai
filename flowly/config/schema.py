@@ -101,9 +101,18 @@ class WebToolsConfig(BaseModel):
     search: WebSearchConfig = Field(default_factory=WebSearchConfig)
 
 
+class ExecToolConfig(BaseModel):
+    """Command execution tool configuration."""
+    enabled: bool = False  # Disabled by default for security
+    timeout_seconds: int = 300  # 5 minutes default
+    max_output_chars: int = 200000  # 200KB
+    approval_timeout_seconds: int = 120  # 2 minutes to approve
+
+
 class ToolsConfig(BaseModel):
     """Tools configuration."""
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
+    exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
 
 
 class Config(BaseSettings):
