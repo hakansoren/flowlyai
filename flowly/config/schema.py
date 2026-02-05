@@ -109,6 +109,17 @@ class ExecToolConfig(BaseModel):
     approval_timeout_seconds: int = 120  # 2 minutes to approve
 
 
+class TrelloConfig(BaseModel):
+    """Trello integration configuration."""
+    api_key: str = ""  # Get at https://trello.com/app-key
+    token: str = ""  # Generate from the same page
+
+
+class IntegrationsConfig(BaseModel):
+    """External integrations configuration."""
+    trello: TrelloConfig = Field(default_factory=TrelloConfig)
+
+
 class ToolsConfig(BaseModel):
     """Tools configuration."""
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
@@ -122,6 +133,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     
     @property
     def workspace_path(self) -> Path:

@@ -19,6 +19,7 @@ from flowly.agent.tools.message import MessageTool
 from flowly.agent.tools.screenshot import ScreenshotTool
 from flowly.agent.tools.spawn import SpawnTool
 from flowly.agent.tools.cron import CronTool
+from flowly.agent.tools.trello import TrelloTool
 from flowly.agent.subagent import SubagentManager
 from flowly.session.manager import SessionManager
 from flowly.cron.service import CronService
@@ -26,6 +27,7 @@ from flowly.compaction.service import CompactionService
 from flowly.compaction.types import CompactionConfig, MemoryFlushConfig
 from flowly.compaction.estimator import estimate_messages_tokens
 from flowly.exec.types import ExecConfig
+from flowly.config.schema import TrelloConfig
 
 
 class AgentLoop:
@@ -52,6 +54,7 @@ class AgentLoop:
         context_messages: int = 100,
         compaction_config: CompactionConfig | None = None,
         exec_config: ExecConfig | None = None,
+        trello_config: TrelloConfig | None = None,
     ):
         self.bus = bus
         self.provider = provider
@@ -82,6 +85,9 @@ class AgentLoop:
 
         # Exec config
         self.exec_config = exec_config or ExecConfig()
+
+        # Trello config
+        self.trello_config = trello_config
 
         self._running = False
         self._register_default_tools()
@@ -119,6 +125,13 @@ class AgentLoop:
         # Cron tool (for scheduling)
         cron_tool = CronTool(cron_service=self.cron_service)
         self.tools.register(cron_tool)
+
+        # Trello tool (if configured)
+        if self.trello_config and self.trello_config.api_key and self.trello_config.token:
+            self.tools.register(TrelloTool(
+                api_key=self.trello_config.api_key,
+                token=self.trello_config.token,
+            ))
     
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""

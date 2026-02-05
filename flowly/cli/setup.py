@@ -218,6 +218,63 @@ def setup_openrouter() -> bool:
     return True
 
 
+def setup_trello() -> bool:
+    """
+    Interactive Trello integration setup wizard.
+
+    Returns True if setup was successful.
+    """
+    from flowly.config.loader import load_config, save_config
+
+    console.print("\n[bold cyan]📋 Trello Integration Setup[/bold cyan]")
+    console.print("─" * 40)
+
+    config = load_config()
+    current_key = config.integrations.trello.api_key
+    current_token = config.integrations.trello.token
+
+    if current_key and current_token:
+        console.print(f"\n[green]✓[/green] Already configured")
+        console.print(f"  API Key: {current_key[:10]}...")
+        console.print(f"  Token: {current_token[:10]}...")
+        if not Confirm.ask("Reconfigure?", default=False):
+            return True
+
+    console.print("\n[dim]To get Trello credentials:[/dim]")
+    console.print("  1. Go to [cyan]https://trello.com/app-key[/cyan]")
+    console.print("  2. Copy the API key shown at the top")
+    console.print("  3. Click the 'Token' link to generate a token")
+    console.print("  4. Authorize the app and copy the token")
+    console.print()
+
+    # Get API key
+    api_key = Prompt.ask("Enter Trello API key").strip()
+
+    if not api_key:
+        console.print("[yellow]Skipped - Trello integration disabled[/yellow]")
+        return True
+
+    # Get token
+    token = Prompt.ask("Enter Trello token").strip()
+
+    if not token:
+        console.print("[yellow]Skipped - Trello integration disabled[/yellow]")
+        return True
+
+    # Save to config
+    config.integrations.trello.api_key = api_key
+    config.integrations.trello.token = token
+    save_config(config)
+
+    console.print("[green]✓[/green] Trello credentials saved")
+    console.print("\n[dim]You can now use Trello commands with the agent:[/dim]")
+    console.print("  • List my Trello boards")
+    console.print("  • Create a card in [board name]")
+    console.print("  • Show cards in [list name]")
+
+    return True
+
+
 def setup_all() -> None:
     """Run the complete setup wizard."""
     from flowly import __logo__
@@ -225,22 +282,29 @@ def setup_all() -> None:
     console.print(f"\n{__logo__} [bold]Flowly Setup Wizard[/bold]\n")
 
     # LLM Provider (required)
-    console.print("[bold]Step 1/3: LLM Provider[/bold]")
+    console.print("[bold]Step 1/4: LLM Provider[/bold]")
     if not setup_openrouter():
         console.print("[red]LLM setup failed. Cannot continue.[/red]")
         return
 
     # Telegram (optional)
-    console.print("\n[bold]Step 2/3: Telegram Bot[/bold]")
+    console.print("\n[bold]Step 2/4: Telegram Bot[/bold]")
     if Confirm.ask("Set up Telegram bot?", default=True):
         setup_telegram()
     else:
         console.print("[dim]Skipped[/dim]")
 
     # Voice (optional)
-    console.print("\n[bold]Step 3/3: Voice Transcription[/bold]")
+    console.print("\n[bold]Step 3/4: Voice Transcription[/bold]")
     if Confirm.ask("Set up voice transcription (Groq)?", default=True):
         setup_voice()
+    else:
+        console.print("[dim]Skipped[/dim]")
+
+    # Trello (optional)
+    console.print("\n[bold]Step 4/4: Trello Integration[/bold]")
+    if Confirm.ask("Set up Trello integration?", default=False):
+        setup_trello()
     else:
         console.print("[dim]Skipped[/dim]")
 

@@ -71,6 +71,13 @@ def setup_openrouter_cmd():
     setup_openrouter()
 
 
+@setup_app.command("trello")
+def setup_trello_cmd():
+    """Set up Trello integration."""
+    from flowly.cli.setup import setup_trello
+    setup_trello()
+
+
 # ============================================================================
 # Onboard / Setup
 # ============================================================================
@@ -272,6 +279,7 @@ def gateway(
         context_messages=config.agents.defaults.context_messages,
         compaction_config=compaction_config,
         exec_config=exec_config,
+        trello_config=config.integrations.trello,
     )
 
     # Set cron job callback (needs agent to be created first)
@@ -430,6 +438,7 @@ def agent(
         context_messages=config.agents.defaults.context_messages,
         compaction_config=compaction_config,
         exec_config=exec_config,
+        trello_config=config.integrations.trello,
     )
 
     async def handle_compact(instructions: str | None = None) -> None:
