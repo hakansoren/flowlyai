@@ -7,15 +7,17 @@ import { Logger } from 'pino';
 import { DeepgramSTT, createDeepgramSTT } from './deepgram.js';
 import { OpenAISTT, createOpenAISTT } from './openai.js';
 import { GroqSTT, createGroqSTT } from './groq.js';
+import { ElevenLabsSTT, createElevenLabsSTT } from './elevenlabs.js';
 import type { STTResult } from '../types.js';
 
-export type STTProvider = DeepgramSTT | OpenAISTT | GroqSTT;
+export type STTProvider = DeepgramSTT | OpenAISTT | GroqSTT | ElevenLabsSTT;
 
 export interface STTOptions {
-  provider: 'deepgram' | 'openai' | 'groq';
+  provider: 'deepgram' | 'openai' | 'groq' | 'elevenlabs';
   deepgramApiKey?: string;
   openaiApiKey?: string;
   groqApiKey?: string;
+  elevenlabsApiKey?: string;
   language?: string;
   logger?: Logger;
 }
@@ -55,9 +57,19 @@ export function createSTT(options: STTOptions): STTProvider {
         logger: options.logger,
       });
 
+    case 'elevenlabs':
+      if (!options.elevenlabsApiKey) {
+        throw new Error('ElevenLabs API key is required');
+      }
+      return createElevenLabsSTT({
+        apiKey: options.elevenlabsApiKey,
+        language: options.language,
+        logger: options.logger,
+      });
+
     default:
       throw new Error(`Unknown STT provider: ${options.provider}`);
   }
 }
 
-export { DeepgramSTT, OpenAISTT, GroqSTT, STTResult };
+export { DeepgramSTT, OpenAISTT, GroqSTT, ElevenLabsSTT, STTResult };

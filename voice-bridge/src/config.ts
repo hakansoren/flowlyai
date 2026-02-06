@@ -25,18 +25,20 @@ export const ConfigSchema = z.object({
 
   // STT (Speech-to-Text)
   stt: z.object({
-    provider: z.enum(['deepgram', 'openai', 'groq']).default('deepgram'),
+    provider: z.enum(['deepgram', 'openai', 'groq', 'elevenlabs']).default('deepgram'),
     deepgramApiKey: z.string().optional(),
     openaiApiKey: z.string().optional(),
     groqApiKey: z.string().optional(),
+    elevenlabsApiKey: z.string().optional(),
     language: z.string().default('en-US'),
   }),
 
   // TTS (Text-to-Speech)
   tts: z.object({
-    provider: z.enum(['openai', 'deepgram']).default('openai'),
+    provider: z.enum(['openai', 'deepgram', 'elevenlabs']).default('openai'),
     openaiApiKey: z.string().optional(),
     deepgramApiKey: z.string().optional(),
+    elevenlabsApiKey: z.string().optional(),
     voice: z.string().default('nova'),
     model: z.string().default('tts-1'),
   }),
@@ -72,12 +74,14 @@ export function loadConfig(): Config {
       deepgramApiKey: process.env.DEEPGRAM_API_KEY,
       openaiApiKey: process.env.OPENAI_API_KEY,
       groqApiKey: process.env.GROQ_API_KEY,
+      elevenlabsApiKey: process.env.ELEVENLABS_API_KEY,
       language: process.env.LANGUAGE || 'en-US',
     },
     tts: {
       provider: process.env.TTS_PROVIDER || 'openai',
       openaiApiKey: process.env.OPENAI_API_KEY,
       deepgramApiKey: process.env.DEEPGRAM_API_KEY,
+      elevenlabsApiKey: process.env.ELEVENLABS_API_KEY,
       voice: process.env.TTS_VOICE || 'nova',
       model: process.env.TTS_MODEL || 'tts-1',
     },
@@ -112,5 +116,13 @@ export function validateProviderConfig(config: Config): void {
 
   if (config.tts.provider === 'deepgram' && !config.tts.deepgramApiKey) {
     throw new Error('DEEPGRAM_API_KEY is required when TTS_PROVIDER=deepgram');
+  }
+
+  if (config.stt.provider === 'elevenlabs' && !config.stt.elevenlabsApiKey) {
+    throw new Error('ELEVENLABS_API_KEY is required when STT_PROVIDER=elevenlabs');
+  }
+
+  if (config.tts.provider === 'elevenlabs' && !config.tts.elevenlabsApiKey) {
+    throw new Error('ELEVENLABS_API_KEY is required when TTS_PROVIDER=elevenlabs');
   }
 }

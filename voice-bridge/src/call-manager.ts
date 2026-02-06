@@ -58,6 +58,7 @@ export class CallManager extends EventEmitter {
       provider: this.config.tts.provider,
       openaiApiKey: this.config.tts.openaiApiKey,
       deepgramApiKey: this.config.tts.deepgramApiKey,
+      elevenlabsApiKey: this.config.tts.elevenlabsApiKey,
       voice: this.config.tts.voice,
       model: this.config.tts.model,
       logger: this.logger,
@@ -212,6 +213,7 @@ export class CallManager extends EventEmitter {
       deepgramApiKey: this.config.stt.deepgramApiKey,
       openaiApiKey: this.config.stt.openaiApiKey,
       groqApiKey: this.config.stt.groqApiKey,
+      elevenlabsApiKey: this.config.stt.elevenlabsApiKey,
       language: this.config.stt.language,
       logger: this.logger,
     });

@@ -328,34 +328,65 @@ def setup_voice_calls() -> bool:
 
     # STT Provider
     console.print("\n[bold]Choose STT (Speech-to-Text) provider:[/bold]")
-    console.print("  [cyan]1.[/cyan] Groq Whisper [dim](recommended, fast)[/dim]")
+    console.print("  [cyan]1.[/cyan] Groq Whisper [dim](recommended, fast, free tier)[/dim]")
     console.print("  [cyan]2.[/cyan] Deepgram [dim](real-time streaming)[/dim]")
     console.print("  [cyan]3.[/cyan] OpenAI Whisper [dim](batch processing)[/dim]")
+    console.print("  [cyan]4.[/cyan] ElevenLabs [dim](high quality, streaming)[/dim]")
 
-    stt_choice = Prompt.ask("Choose STT", choices=["1", "2", "3"], default="1")
-    stt_map = {"1": "groq", "2": "deepgram", "3": "openai"}
+    stt_choice = Prompt.ask("Choose STT", choices=["1", "2", "3", "4"], default="1")
+    stt_map = {"1": "groq", "2": "deepgram", "3": "openai", "4": "elevenlabs"}
     stt_provider = stt_map[stt_choice]
 
     # API key based on provider
     deepgram_key = ""
     groq_key = ""
+    elevenlabs_key = ""
     if stt_provider == "groq":
         console.print("\n[dim]Get Groq API key at: https://console.groq.com/keys[/dim]")
         groq_key = Prompt.ask("Enter Groq API key").strip()
     elif stt_provider == "deepgram":
         console.print("\n[dim]Get Deepgram API key at: https://console.deepgram.com[/dim]")
         deepgram_key = Prompt.ask("Enter Deepgram API key").strip()
+    elif stt_provider == "elevenlabs":
+        console.print("\n[dim]Get ElevenLabs API key at: https://elevenlabs.io/app/settings/api-keys[/dim]")
+        elevenlabs_key = Prompt.ask("Enter ElevenLabs API key").strip()
 
     # TTS Provider
     console.print("\n[bold]Choose TTS (Text-to-Speech) provider:[/bold]")
-    console.print("  [cyan]1.[/cyan] OpenAI [dim](high quality)[/dim]")
-    console.print("  [cyan]2.[/cyan] Deepgram [dim](fast, Aura voices)[/dim]")
+    console.print("  [cyan]1.[/cyan] ElevenLabs [dim](best quality, 5000+ voices)[/dim]")
+    console.print("  [cyan]2.[/cyan] OpenAI [dim](high quality)[/dim]")
+    console.print("  [cyan]3.[/cyan] Deepgram [dim](fast, Aura voices)[/dim]")
 
-    tts_choice = Prompt.ask("Choose TTS", choices=["1", "2"], default="1")
-    tts_provider = "openai" if tts_choice == "1" else "deepgram"
+    tts_choice = Prompt.ask("Choose TTS", choices=["1", "2", "3"], default="1")
+    tts_map = {"1": "elevenlabs", "2": "openai", "3": "deepgram"}
+    tts_provider = tts_map[tts_choice]
 
     # TTS Voice based on provider
-    if tts_provider == "openai":
+    if tts_provider == "elevenlabs":
+        # Get ElevenLabs API key if not already set for STT
+        if not elevenlabs_key:
+            console.print("\n[dim]Get ElevenLabs API key at: https://elevenlabs.io/app/settings/api-keys[/dim]")
+            elevenlabs_key = Prompt.ask("Enter ElevenLabs API key").strip()
+
+        console.print("\n[bold]Choose ElevenLabs voice:[/bold]")
+        console.print("  [cyan]1.[/cyan] rachel [dim](female, American, calm)[/dim]")
+        console.print("  [cyan]2.[/cyan] bella [dim](female, American, soft)[/dim]")
+        console.print("  [cyan]3.[/cyan] elli [dim](female, American, young)[/dim]")
+        console.print("  [cyan]4.[/cyan] josh [dim](male, American, deep)[/dim]")
+        console.print("  [cyan]5.[/cyan] adam [dim](male, American, deep)[/dim]")
+        console.print("  [cyan]6.[/cyan] sam [dim](male, American, raspy)[/dim]")
+
+        voice_choice = Prompt.ask("Choose voice", choices=["1", "2", "3", "4", "5", "6"], default="1")
+        voice_map = {
+            "1": "21m00Tcm4TlvDq8ikWAM",  # rachel
+            "2": "EXAVITQu4vr4xnSDxMaL",  # bella
+            "3": "MF3mGyEYCl7XYWbV9V6O",  # elli
+            "4": "TxGEqnHWrfWFTfGW9XjX",  # josh
+            "5": "pNInz6obpgDQGcFmaJgB",  # adam
+            "6": "yoZ06aMxZJJ28mfd3POQ",  # sam
+        }
+        tts_voice = voice_map[voice_choice]
+    elif tts_provider == "openai":
         console.print("\n[bold]Choose OpenAI voice:[/bold]")
         console.print("  [cyan]1.[/cyan] nova [dim](neutral, natural)[/dim]")
         console.print("  [cyan]2.[/cyan] alloy [dim](neutral)[/dim]")
@@ -396,6 +427,7 @@ def setup_voice_calls() -> bool:
     config.integrations.voice.tts_provider = tts_provider
     config.integrations.voice.groq_api_key = groq_key
     config.integrations.voice.deepgram_api_key = deepgram_key
+    config.integrations.voice.elevenlabs_api_key = elevenlabs_key
     config.integrations.voice.tts_voice = tts_voice
     config.integrations.voice.language = language
     save_config(config)

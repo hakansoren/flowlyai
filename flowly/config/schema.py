@@ -129,11 +129,12 @@ class VoiceBridgeConfig(BaseModel):
     webhook_base_url: str = ""
 
     # STT/TTS settings
-    stt_provider: str = "groq"  # groq, deepgram, or openai
-    tts_provider: str = "openai"  # openai or deepgram
+    stt_provider: str = "groq"  # groq, deepgram, openai, or elevenlabs
+    tts_provider: str = "elevenlabs"  # openai, deepgram, or elevenlabs
     groq_api_key: str = ""  # For Groq Whisper STT
     deepgram_api_key: str = ""  # For Deepgram STT/TTS
-    tts_voice: str = "nova"  # TTS voice (provider-specific)
+    elevenlabs_api_key: str = ""  # For ElevenLabs STT/TTS
+    tts_voice: str = "21m00Tcm4TlvDq8ikWAM"  # TTS voice (provider-specific, default: rachel)
     language: str = "en-US"
 
 
