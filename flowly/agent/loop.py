@@ -20,6 +20,7 @@ from flowly.agent.tools.screenshot import ScreenshotTool
 from flowly.agent.tools.spawn import SpawnTool
 from flowly.agent.tools.cron import CronTool
 from flowly.agent.tools.trello import TrelloTool
+from flowly.agent.tools.docker import DockerTool
 from flowly.agent.subagent import SubagentManager
 from flowly.session.manager import SessionManager
 from flowly.cron.service import CronService
@@ -132,6 +133,9 @@ class AgentLoop:
                 api_key=self.trello_config.api_key,
                 token=self.trello_config.token,
             ))
+
+        # Docker tool (always available, will error if Docker not installed)
+        self.tools.register(DockerTool())
     
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
