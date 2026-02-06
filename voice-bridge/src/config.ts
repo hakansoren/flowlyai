@@ -34,8 +34,9 @@ export const ConfigSchema = z.object({
 
   // TTS (Text-to-Speech)
   tts: z.object({
-    provider: z.enum(['openai', 'twilio']).default('openai'),
+    provider: z.enum(['openai', 'deepgram']).default('openai'),
     openaiApiKey: z.string().optional(),
+    deepgramApiKey: z.string().optional(),
     voice: z.string().default('nova'),
     model: z.string().default('tts-1'),
   }),
@@ -76,6 +77,7 @@ export function loadConfig(): Config {
     tts: {
       provider: process.env.TTS_PROVIDER || 'openai',
       openaiApiKey: process.env.OPENAI_API_KEY,
+      deepgramApiKey: process.env.DEEPGRAM_API_KEY,
       voice: process.env.TTS_VOICE || 'nova',
       model: process.env.TTS_MODEL || 'tts-1',
     },
@@ -106,5 +108,9 @@ export function validateProviderConfig(config: Config): void {
 
   if (config.tts.provider === 'openai' && !config.tts.openaiApiKey) {
     throw new Error('OPENAI_API_KEY is required when TTS_PROVIDER=openai');
+  }
+
+  if (config.tts.provider === 'deepgram' && !config.tts.deepgramApiKey) {
+    throw new Error('DEEPGRAM_API_KEY is required when TTS_PROVIDER=deepgram');
   }
 }

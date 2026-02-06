@@ -57,6 +57,7 @@ export class CallManager extends EventEmitter {
     this.tts = createTTS({
       provider: this.config.tts.provider,
       openaiApiKey: this.config.tts.openaiApiKey,
+      deepgramApiKey: this.config.tts.deepgramApiKey,
       voice: this.config.tts.voice,
       model: this.config.tts.model,
       logger: this.logger,

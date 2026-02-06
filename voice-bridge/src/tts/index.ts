@@ -4,12 +4,14 @@
 
 import { Logger } from 'pino';
 import { OpenAITTS, createOpenAITTS, OPENAI_VOICES, OPENAI_TTS_MODELS } from './openai.js';
+import { DeepgramTTS, createDeepgramTTS, DEEPGRAM_VOICES } from './deepgram.js';
 
-export type TTSProvider = OpenAITTS;
+export type TTSProvider = OpenAITTS | DeepgramTTS;
 
 export interface TTSOptions {
-  provider: 'openai' | 'twilio';
+  provider: 'openai' | 'deepgram';
   openaiApiKey?: string;
+  deepgramApiKey?: string;
   voice?: string;
   model?: string;
   speed?: number;
@@ -23,7 +25,7 @@ export function createTTS(options: TTSOptions): TTSProvider {
   switch (options.provider) {
     case 'openai':
       if (!options.openaiApiKey) {
-        throw new Error('OpenAI API key is required');
+        throw new Error('OpenAI API key is required for TTS');
       }
       return createOpenAITTS({
         apiKey: options.openaiApiKey,
@@ -33,14 +35,19 @@ export function createTTS(options: TTSOptions): TTSProvider {
         logger: options.logger,
       });
 
-    case 'twilio':
-      // Twilio TTS is handled via TwiML, not a separate provider
-      // For now, fall back to OpenAI
-      throw new Error('Twilio TTS should be handled via TwiML <Say> verb');
+    case 'deepgram':
+      if (!options.deepgramApiKey) {
+        throw new Error('Deepgram API key is required for TTS');
+      }
+      return createDeepgramTTS({
+        apiKey: options.deepgramApiKey,
+        voice: options.voice,
+        logger: options.logger,
+      });
 
     default:
       throw new Error(`Unknown TTS provider: ${options.provider}`);
   }
 }
 
-export { OpenAITTS, OPENAI_VOICES, OPENAI_TTS_MODELS };
+export { OpenAITTS, DeepgramTTS, OPENAI_VOICES, OPENAI_TTS_MODELS, DEEPGRAM_VOICES };
