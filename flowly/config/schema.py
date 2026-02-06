@@ -130,9 +130,10 @@ class VoiceBridgeConfig(BaseModel):
 
     # STT/TTS settings
     stt_provider: str = "groq"  # groq, deepgram, or openai
+    tts_provider: str = "openai"  # openai or deepgram
     groq_api_key: str = ""  # For Groq Whisper STT
-    deepgram_api_key: str = ""  # For Deepgram STT
-    tts_voice: str = "nova"  # OpenAI TTS voice
+    deepgram_api_key: str = ""  # For Deepgram STT/TTS
+    tts_voice: str = "nova"  # TTS voice (provider-specific)
     language: str = "en-US"
 
 

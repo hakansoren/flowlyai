@@ -346,18 +346,42 @@ def setup_voice_calls() -> bool:
         console.print("\n[dim]Get Deepgram API key at: https://console.deepgram.com[/dim]")
         deepgram_key = Prompt.ask("Enter Deepgram API key").strip()
 
-    # TTS Voice
-    console.print("\n[bold]Choose TTS voice (OpenAI):[/bold]")
-    console.print("  [cyan]1.[/cyan] nova [dim](neutral, natural)[/dim]")
-    console.print("  [cyan]2.[/cyan] alloy [dim](neutral)[/dim]")
-    console.print("  [cyan]3.[/cyan] shimmer [dim](soft, warm)[/dim]")
-    console.print("  [cyan]4.[/cyan] echo [dim](deep)[/dim]")
-    console.print("  [cyan]5.[/cyan] fable [dim](British)[/dim]")
-    console.print("  [cyan]6.[/cyan] onyx [dim](authoritative)[/dim]")
+    # TTS Provider
+    console.print("\n[bold]Choose TTS (Text-to-Speech) provider:[/bold]")
+    console.print("  [cyan]1.[/cyan] OpenAI [dim](high quality)[/dim]")
+    console.print("  [cyan]2.[/cyan] Deepgram [dim](fast, Aura voices)[/dim]")
 
-    voice_choice = Prompt.ask("Choose voice", choices=["1", "2", "3", "4", "5", "6"], default="1")
-    voice_map = {"1": "nova", "2": "alloy", "3": "shimmer", "4": "echo", "5": "fable", "6": "onyx"}
-    tts_voice = voice_map[voice_choice]
+    tts_choice = Prompt.ask("Choose TTS", choices=["1", "2"], default="1")
+    tts_provider = "openai" if tts_choice == "1" else "deepgram"
+
+    # TTS Voice based on provider
+    if tts_provider == "openai":
+        console.print("\n[bold]Choose OpenAI voice:[/bold]")
+        console.print("  [cyan]1.[/cyan] nova [dim](neutral, natural)[/dim]")
+        console.print("  [cyan]2.[/cyan] alloy [dim](neutral)[/dim]")
+        console.print("  [cyan]3.[/cyan] shimmer [dim](soft, warm)[/dim]")
+        console.print("  [cyan]4.[/cyan] echo [dim](deep)[/dim]")
+        console.print("  [cyan]5.[/cyan] fable [dim](British)[/dim]")
+        console.print("  [cyan]6.[/cyan] onyx [dim](authoritative)[/dim]")
+
+        voice_choice = Prompt.ask("Choose voice", choices=["1", "2", "3", "4", "5", "6"], default="1")
+        voice_map = {"1": "nova", "2": "alloy", "3": "shimmer", "4": "echo", "5": "fable", "6": "onyx"}
+        tts_voice = voice_map[voice_choice]
+    else:
+        console.print("\n[bold]Choose Deepgram Aura voice:[/bold]")
+        console.print("  [cyan]1.[/cyan] aura-asteria-en [dim](female, American)[/dim]")
+        console.print("  [cyan]2.[/cyan] aura-luna-en [dim](female, American)[/dim]")
+        console.print("  [cyan]3.[/cyan] aura-orion-en [dim](male, American)[/dim]")
+        console.print("  [cyan]4.[/cyan] aura-arcas-en [dim](male, American)[/dim]")
+        console.print("  [cyan]5.[/cyan] aura-athena-en [dim](female, British)[/dim]")
+        console.print("  [cyan]6.[/cyan] aura-helios-en [dim](male, British)[/dim]")
+
+        voice_choice = Prompt.ask("Choose voice", choices=["1", "2", "3", "4", "5", "6"], default="1")
+        voice_map = {
+            "1": "aura-asteria-en", "2": "aura-luna-en", "3": "aura-orion-en",
+            "4": "aura-arcas-en", "5": "aura-athena-en", "6": "aura-helios-en"
+        }
+        tts_voice = voice_map[voice_choice]
 
     # Language
     language = Prompt.ask("Enter language code", default="en-US").strip()
@@ -369,6 +393,7 @@ def setup_voice_calls() -> bool:
     config.integrations.voice.twilio_phone_number = phone_number
     config.integrations.voice.webhook_base_url = webhook_url
     config.integrations.voice.stt_provider = stt_provider
+    config.integrations.voice.tts_provider = tts_provider
     config.integrations.voice.groq_api_key = groq_key
     config.integrations.voice.deepgram_api_key = deepgram_key
     config.integrations.voice.tts_voice = tts_voice
