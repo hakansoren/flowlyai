@@ -15,7 +15,7 @@ class SystemTool(Tool):
     """
     Tool to monitor system resources: CPU, RAM, disk, network, processes.
 
-    Works on Linux and macOS without external dependencies.
+    Works on Linux, macOS, and Windows without external dependencies.
     """
 
     def __init__(self, timeout: int = 10):
@@ -34,15 +34,15 @@ Actions:
 - overview: Quick system overview (CPU, RAM, disk, uptime)
 - cpu: Detailed CPU information and usage
 - memory: RAM and swap usage
-- disk: Disk usage for all mounts
+- disk: Disk usage for all drives
 - network: Network interfaces and connections
 - processes: Top processes by CPU/memory (sort_by: cpu/memory, limit: 10)
-- uptime: System uptime and load averages
+- uptime: System uptime and boot time
 - info: System information (OS, kernel, hostname)
-- services: List running services (Linux systemd)
+- services: List running services
 - ports: List listening ports
 
-No external dependencies required - uses system commands."""
+Works on Linux, macOS, and Windows without external dependencies."""
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -88,6 +88,11 @@ No external dependencies required - uses system commands."""
             return -1, f"Command timed out after {self.timeout}s"
         except Exception as e:
             return -1, str(e)
+
+    async def _run_powershell(self, cmd: str) -> tuple[int, str]:
+        """Run a PowerShell command and return exit code and output."""
+        ps_cmd = f'powershell -NoProfile -Command "{cmd}"'
+        return await self._run_command(ps_cmd)
 
     async def execute(self, action: str, **kwargs: Any) -> str:
         """Execute a system monitoring action."""
@@ -147,17 +152,28 @@ No external dependencies required - uses system commands."""
         # Uptime
         lines.append(f"**Uptime:** {uptime}")
 
-        # Load (Linux/macOS)
-        code, output = await self._run_command("uptime")
-        if code == 0 and "load average" in output.lower():
-            load = output.split("load average:")[-1].strip() if "load average:" in output else output.split("load averages:")[-1].strip()
-            lines.append(f"**Load:** {load}")
+        # Load (Linux/macOS only)
+        if self.system != "windows":
+            code, output = await self._run_command("uptime")
+            if code == 0 and "load average" in output.lower():
+                load = output.split("load average:")[-1].strip() if "load average:" in output else output.split("load averages:")[-1].strip()
+                lines.append(f"**Load:** {load}")
 
         return "\n".join(lines)
 
     async def _get_cpu_usage(self) -> str:
         """Get CPU usage percentage."""
-        if self.system == "darwin":
+        if self.system == "windows":
+            code, output = await self._run_powershell(
+                "(Get-CimInstance Win32_Processor).LoadPercentage"
+            )
+            if code == 0 and output.strip():
+                try:
+                    usage = float(output.strip())
+                    return f"{usage:.1f}% used"
+                except:
+                    pass
+        elif self.system == "darwin":
             # macOS
             code, output = await self._run_command(
                 "top -l 1 -n 0 | grep 'CPU usage'"
@@ -191,7 +207,25 @@ No external dependencies required - uses system commands."""
 
     async def _get_memory_info(self) -> str:
         """Get memory usage."""
-        if self.system == "darwin":
+        if self.system == "windows":
+            code, output = await self._run_powershell(
+                "$os = Get-CimInstance Win32_OperatingSystem; "
+                "$total = $os.TotalVisibleMemorySize * 1024; "
+                "$free = $os.FreePhysicalMemory * 1024; "
+                "$used = $total - $free; "
+                "$pct = [math]::Round(($used / $total) * 100, 1); "
+                "Write-Output \"$used|$total|$pct\""
+            )
+            if code == 0 and "|" in output:
+                try:
+                    parts = output.strip().split("|")
+                    used = int(float(parts[0]))
+                    total = int(float(parts[1]))
+                    pct = float(parts[2])
+                    return f"{self._format_bytes(used)} / {self._format_bytes(total)} ({pct}%)"
+                except:
+                    pass
+        elif self.system == "darwin":
             # macOS - use vm_stat
             code, output = await self._run_command("vm_stat")
             if code == 0:
@@ -252,24 +286,50 @@ No external dependencies required - uses system commands."""
 
     async def _get_disk_usage(self) -> str:
         """Get primary disk usage."""
-        code, output = await self._run_command("df -h / | tail -1")
-        if code == 0 and output:
-            parts = output.split()
-            if len(parts) >= 5:
-                used = parts[2]
-                total = parts[1]
-                pct = parts[4]
-                return f"{used} / {total} ({pct})"
+        if self.system == "windows":
+            code, output = await self._run_powershell(
+                "$d = Get-PSDrive C; "
+                "$used = $d.Used; $free = $d.Free; $total = $used + $free; "
+                "$pct = [math]::Round(($used / $total) * 100, 0); "
+                "Write-Output \"$used|$total|$pct\""
+            )
+            if code == 0 and "|" in output:
+                try:
+                    parts = output.strip().split("|")
+                    used = int(float(parts[0]))
+                    total = int(float(parts[1]))
+                    pct = int(float(parts[2]))
+                    return f"{self._format_bytes(used)} / {self._format_bytes(total)} ({pct}%)"
+                except:
+                    pass
+        else:
+            code, output = await self._run_command("df -h / | tail -1")
+            if code == 0 and output:
+                parts = output.split()
+                if len(parts) >= 5:
+                    used = parts[2]
+                    total = parts[1]
+                    pct = parts[4]
+                    return f"{used} / {total} ({pct})"
         return "N/A"
 
     async def _get_uptime(self) -> str:
         """Get system uptime."""
-        code, output = await self._run_command("uptime -p 2>/dev/null || uptime")
-        if code == 0 and output:
-            if "up " in output:
-                # Extract just the uptime part
-                uptime_part = output.split("up ")[-1].split(",")[0:2]
-                return ", ".join(uptime_part).strip().rstrip(",")
+        if self.system == "windows":
+            code, output = await self._run_powershell(
+                "$boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime; "
+                "$uptime = (Get-Date) - $boot; "
+                "'{0} days, {1} hours, {2} minutes' -f $uptime.Days, $uptime.Hours, $uptime.Minutes"
+            )
+            if code == 0 and output:
+                return output.strip()
+        else:
+            code, output = await self._run_command("uptime -p 2>/dev/null || uptime")
+            if code == 0 and output:
+                if "up " in output:
+                    # Extract just the uptime part
+                    uptime_part = output.split("up ")[-1].split(",")[0:2]
+                    return ", ".join(uptime_part).strip().rstrip(",")
         return "N/A"
 
     def _format_bytes(self, bytes_val: int) -> str:
@@ -284,35 +344,57 @@ No external dependencies required - uses system commands."""
         """Get detailed CPU information."""
         lines = ["**CPU Information**\n"]
 
-        # CPU model
-        if self.system == "darwin":
+        if self.system == "windows":
+            # CPU model
+            code, output = await self._run_powershell(
+                "(Get-CimInstance Win32_Processor).Name"
+            )
+            if code == 0 and output:
+                lines.append(f"**Model:** {output.strip()}")
+
+            # Core count
+            code, output = await self._run_powershell(
+                "(Get-CimInstance Win32_Processor).NumberOfCores"
+            )
+            if code == 0 and output:
+                lines.append(f"**Cores:** {output.strip()}")
+
+            # Logical processors
+            code, output = await self._run_powershell(
+                "(Get-CimInstance Win32_Processor).NumberOfLogicalProcessors"
+            )
+            if code == 0 and output:
+                lines.append(f"**Logical Processors:** {output.strip()}")
+
+        elif self.system == "darwin":
             code, output = await self._run_command("sysctl -n machdep.cpu.brand_string")
+            if code == 0 and output:
+                lines.append(f"**Model:** {output.strip()}")
+
+            code, output = await self._run_command("sysctl -n hw.ncpu")
+            if code == 0 and output:
+                lines.append(f"**Cores:** {output.strip()}")
         else:
             code, output = await self._run_command("cat /proc/cpuinfo | grep 'model name' | head -1 | cut -d: -f2")
+            if code == 0 and output:
+                lines.append(f"**Model:** {output.strip()}")
 
-        if code == 0 and output:
-            lines.append(f"**Model:** {output.strip()}")
-
-        # Core count
-        if self.system == "darwin":
-            code, output = await self._run_command("sysctl -n hw.ncpu")
-        else:
             code, output = await self._run_command("nproc")
-
-        if code == 0 and output:
-            lines.append(f"**Cores:** {output.strip()}")
+            if code == 0 and output:
+                lines.append(f"**Cores:** {output.strip()}")
 
         # Current usage
         usage = await self._get_cpu_usage()
         lines.append(f"**Usage:** {usage}")
 
-        # Load averages
-        code, output = await self._run_command("uptime")
-        if code == 0 and "load average" in output.lower():
-            load = output.split("load average")[-1].replace(":", "").replace("s:", "").strip()
-            lines.append(f"**Load (1/5/15 min):** {load}")
+        # Load averages (Unix only)
+        if self.system != "windows":
+            code, output = await self._run_command("uptime")
+            if code == 0 and "load average" in output.lower():
+                load = output.split("load average")[-1].replace(":", "").replace("s:", "").strip()
+                lines.append(f"**Load (1/5/15 min):** {load}")
 
-        # Per-core usage (top 5 if many cores)
+        # Per-core usage (Linux only)
         if self.system == "linux":
             code, output = await self._run_command(
                 "mpstat -P ALL 1 1 2>/dev/null | grep -E '^Average:' | tail -n +2 | head -5"
@@ -340,7 +422,28 @@ No external dependencies required - uses system commands."""
         mem = await self._get_memory_info()
         lines.append(f"**RAM:** {mem}")
 
-        if self.system == "linux":
+        if self.system == "windows":
+            # Virtual memory / page file
+            code, output = await self._run_powershell(
+                "$pf = Get-CimInstance Win32_PageFileUsage; "
+                "if ($pf) { "
+                "$used = $pf.CurrentUsage * 1MB; "
+                "$total = $pf.AllocatedBaseSize * 1MB; "
+                "$pct = if($total -gt 0){[math]::Round(($used/$total)*100,1)}else{0}; "
+                "Write-Output \"$used|$total|$pct\" "
+                "}"
+            )
+            if code == 0 and "|" in output:
+                try:
+                    parts = output.strip().split("|")
+                    used = int(float(parts[0]))
+                    total = int(float(parts[1]))
+                    pct = float(parts[2])
+                    lines.append(f"**Page File:** {self._format_bytes(used)} / {self._format_bytes(total)} ({pct}%)")
+                except:
+                    pass
+
+        elif self.system == "linux":
             # Detailed breakdown from /proc/meminfo
             code, output = await self._run_command("cat /proc/meminfo")
             if code == 0:
@@ -371,35 +474,66 @@ No external dependencies required - uses system commands."""
         return "\n".join(lines)
 
     async def _disk(self) -> str:
-        """Get disk usage for all mounts."""
+        """Get disk usage for all mounts/drives."""
         lines = ["**Disk Usage**\n"]
 
-        code, output = await self._run_command("df -h | grep -E '^/dev'")
-        if code != 0 or not output:
-            code, output = await self._run_command("df -h")
+        if self.system == "windows":
+            code, output = await self._run_powershell(
+                "Get-PSDrive -PSProvider FileSystem | ForEach-Object { "
+                "$used = $_.Used; $free = $_.Free; "
+                "if ($used -ne $null -and $free -ne $null) { "
+                "$total = $used + $free; "
+                "$pct = if($total -gt 0){[math]::Round(($used/$total)*100,0)}else{0}; "
+                "Write-Output ('{0}|{1}|{2}|{3}|{4}' -f $_.Name, $total, $used, $free, $pct) "
+                "} }"
+            )
+            if code == 0 and output:
+                lines.append("| Drive | Size | Used | Free | Use% |")
+                lines.append("|-------|------|------|------|------|")
 
-        if code == 0 and output:
-            lines.append("| Mount | Size | Used | Avail | Use% |")
-            lines.append("|-------|------|------|-------|------|")
+                for line in output.strip().split("\n"):
+                    if "|" in line:
+                        parts = line.split("|")
+                        if len(parts) >= 5:
+                            drive = parts[0] + ":"
+                            try:
+                                total = int(float(parts[1]))
+                                used = int(float(parts[2]))
+                                free = int(float(parts[3]))
+                                pct = int(float(parts[4]))
+                                pct_str = f"{pct}%"
+                                if pct >= 90:
+                                    pct_str = f"**{pct}%**"
+                                lines.append(f"| {drive} | {self._format_bytes(total)} | {self._format_bytes(used)} | {self._format_bytes(free)} | {pct_str} |")
+                            except:
+                                pass
+        else:
+            code, output = await self._run_command("df -h | grep -E '^/dev'")
+            if code != 0 or not output:
+                code, output = await self._run_command("df -h")
 
-            for line in output.strip().split("\n"):
-                parts = line.split()
-                if len(parts) >= 6 and parts[0].startswith("/"):
-                    mount = parts[5] if len(parts) > 5 else parts[0]
-                    size = parts[1]
-                    used = parts[2]
-                    avail = parts[3]
-                    pct = parts[4]
+            if code == 0 and output:
+                lines.append("| Mount | Size | Used | Avail | Use% |")
+                lines.append("|-------|------|------|-------|------|")
 
-                    # Add warning for high usage
-                    try:
-                        pct_num = int(pct.replace("%", ""))
-                        if pct_num >= 90:
-                            pct = f"**{pct}**"
-                    except:
-                        pass
+                for line in output.strip().split("\n"):
+                    parts = line.split()
+                    if len(parts) >= 6 and parts[0].startswith("/"):
+                        mount = parts[5] if len(parts) > 5 else parts[0]
+                        size = parts[1]
+                        used = parts[2]
+                        avail = parts[3]
+                        pct = parts[4]
 
-                    lines.append(f"| {mount} | {size} | {used} | {avail} | {pct} |")
+                        # Add warning for high usage
+                        try:
+                            pct_num = int(pct.replace("%", ""))
+                            if pct_num >= 90:
+                                pct = f"**{pct}**"
+                        except:
+                            pass
+
+                        lines.append(f"| {mount} | {size} | {used} | {avail} | {pct} |")
 
         return "\n".join(lines)
 
@@ -407,13 +541,33 @@ No external dependencies required - uses system commands."""
         """Get network interface information."""
         lines = ["**Network Interfaces**\n"]
 
-        if self.system == "darwin":
-            code, output = await self._run_command("ifconfig | grep -E '^[a-z]|inet '")
-        else:
-            code, output = await self._run_command("ip -o addr show | grep -v 'scope host'")
+        if self.system == "windows":
+            code, output = await self._run_powershell(
+                "Get-NetIPAddress -AddressFamily IPv4 | "
+                "Where-Object { $_.IPAddress -ne '127.0.0.1' } | "
+                "ForEach-Object { Write-Output ('{0}|{1}' -f $_.InterfaceAlias, $_.IPAddress) }"
+            )
+            if code == 0 and output:
+                for line in output.strip().split("\n"):
+                    if "|" in line:
+                        parts = line.split("|")
+                        if len(parts) >= 2:
+                            lines.append(f"- **{parts[0]}:** {parts[1]}")
 
-        if code == 0 and output:
-            if self.system == "darwin":
+            # Active connections count
+            code, output = await self._run_powershell(
+                "(Get-NetTCPConnection -State Established).Count"
+            )
+            if code == 0 and output:
+                try:
+                    conn_count = int(output.strip())
+                    lines.append(f"\n**Active Connections:** {conn_count}")
+                except:
+                    pass
+
+        elif self.system == "darwin":
+            code, output = await self._run_command("ifconfig | grep -E '^[a-z]|inet '")
+            if code == 0 and output:
                 current_iface = ""
                 for line in output.strip().split("\n"):
                     if not line.startswith("\t") and not line.startswith(" "):
@@ -422,7 +576,17 @@ No external dependencies required - uses system commands."""
                         ip = line.strip().split()[1]
                         if not ip.startswith("127."):
                             lines.append(f"- **{current_iface}:** {ip}")
-            else:
+
+            code, output = await self._run_command("netstat -an | grep ESTABLISHED | wc -l")
+            if code == 0 and output:
+                try:
+                    conn_count = int(output.strip())
+                    lines.append(f"\n**Active Connections:** {conn_count}")
+                except:
+                    pass
+        else:
+            code, output = await self._run_command("ip -o addr show | grep -v 'scope host'")
+            if code == 0 and output:
                 for line in output.strip().split("\n"):
                     parts = line.split()
                     if len(parts) >= 4:
@@ -431,18 +595,13 @@ No external dependencies required - uses system commands."""
                         if not ip.startswith("127.") and not ip.startswith("::1"):
                             lines.append(f"- **{iface}:** {ip}")
 
-        # Active connections count
-        if self.system == "linux":
             code, output = await self._run_command("ss -tun | wc -l")
-        else:
-            code, output = await self._run_command("netstat -an | grep ESTABLISHED | wc -l")
-
-        if code == 0 and output:
-            try:
-                conn_count = int(output.strip()) - 1  # Subtract header
-                lines.append(f"\n**Active Connections:** {max(0, conn_count)}")
-            except:
-                pass
+            if code == 0 and output:
+                try:
+                    conn_count = int(output.strip()) - 1  # Subtract header
+                    lines.append(f"\n**Active Connections:** {max(0, conn_count)}")
+                except:
+                    pass
 
         return "\n".join(lines)
 
@@ -450,31 +609,60 @@ No external dependencies required - uses system commands."""
         """Get top processes."""
         lines = [f"**Top {limit} Processes (by {sort_by.upper()})**\n"]
 
-        if sort_by == "memory":
-            if self.system == "darwin":
-                cmd = f"ps aux | sort -nrk 4 | head -{limit + 1}"
+        if self.system == "windows":
+            if sort_by == "memory":
+                sort_prop = "WorkingSet64"
             else:
-                cmd = f"ps aux --sort=-%mem | head -{limit + 1}"
+                sort_prop = "CPU"
+
+            code, output = await self._run_powershell(
+                f"Get-Process | Sort-Object {sort_prop} -Descending | "
+                f"Select-Object -First {limit} | "
+                "ForEach-Object { "
+                "$cpu = [math]::Round($_.CPU, 1); "
+                "$mem = [math]::Round($_.WorkingSet64 / 1MB, 1); "
+                "Write-Output ('{0}|{1}|{2}|{3}' -f $_.Id, $cpu, $mem, $_.ProcessName) "
+                "}"
+            )
+            if code == 0 and output:
+                lines.append("| PID | CPU (s) | MEM (MB) | Process |")
+                lines.append("|-----|---------|----------|---------|")
+
+                for line in output.strip().split("\n"):
+                    if "|" in line:
+                        parts = line.split("|")
+                        if len(parts) >= 4:
+                            pid = parts[0]
+                            cpu = parts[1]
+                            mem = parts[2]
+                            name = parts[3][:30]
+                            lines.append(f"| {pid} | {cpu} | {mem} | {name} |")
         else:
-            if self.system == "darwin":
-                cmd = f"ps aux | sort -nrk 3 | head -{limit + 1}"
+            if sort_by == "memory":
+                if self.system == "darwin":
+                    cmd = f"ps aux | sort -nrk 4 | head -{limit + 1}"
+                else:
+                    cmd = f"ps aux --sort=-%mem | head -{limit + 1}"
             else:
-                cmd = f"ps aux --sort=-%cpu | head -{limit + 1}"
+                if self.system == "darwin":
+                    cmd = f"ps aux | sort -nrk 3 | head -{limit + 1}"
+                else:
+                    cmd = f"ps aux --sort=-%cpu | head -{limit + 1}"
 
-        code, output = await self._run_command(cmd)
-        if code == 0 and output:
-            lines.append("| PID | CPU% | MEM% | Command |")
-            lines.append("|-----|------|------|---------|")
+            code, output = await self._run_command(cmd)
+            if code == 0 and output:
+                lines.append("| PID | CPU% | MEM% | Command |")
+                lines.append("|-----|------|------|---------|")
 
-            proc_lines = output.strip().split("\n")[1:]  # Skip header
-            for line in proc_lines[:limit]:
-                parts = line.split()
-                if len(parts) >= 11:
-                    pid = parts[1]
-                    cpu = parts[2]
-                    mem = parts[3]
-                    cmd = " ".join(parts[10:])[:40]  # Truncate command
-                    lines.append(f"| {pid} | {cpu} | {mem} | {cmd} |")
+                proc_lines = output.strip().split("\n")[1:]  # Skip header
+                for line in proc_lines[:limit]:
+                    parts = line.split()
+                    if len(parts) >= 11:
+                        pid = parts[1]
+                        cpu = parts[2]
+                        mem = parts[3]
+                        cmd = " ".join(parts[10:])[:40]  # Truncate command
+                        lines.append(f"| {pid} | {cpu} | {mem} | {cmd} |")
 
         return "\n".join(lines)
 
@@ -482,32 +670,46 @@ No external dependencies required - uses system commands."""
         """Get system uptime and boot time."""
         lines = ["**System Uptime**\n"]
 
-        # Uptime
-        code, output = await self._run_command("uptime")
-        if code == 0 and output:
-            lines.append(f"**Uptime:** {output.strip()}")
-
-        # Boot time
-        if self.system == "darwin":
-            code, output = await self._run_command("sysctl -n kern.boottime")
-            if code == 0 and "sec" in output:
-                try:
-                    # Parse { sec = 1234567890, usec = 0 }
-                    sec = int(output.split("sec = ")[1].split(",")[0])
-                    boot_time = datetime.fromtimestamp(sec)
-                    lines.append(f"**Boot Time:** {boot_time.strftime('%Y-%m-%d %H:%M:%S')}")
-                except:
-                    pass
-        else:
-            code, output = await self._run_command("uptime -s 2>/dev/null")
+        if self.system == "windows":
+            code, output = await self._run_powershell(
+                "$boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime; "
+                "$uptime = (Get-Date) - $boot; "
+                "Write-Output ('Uptime: {0} days, {1} hours, {2} minutes' -f $uptime.Days, $uptime.Hours, $uptime.Minutes); "
+                "Write-Output ('Boot Time: {0}' -f $boot.ToString('yyyy-MM-dd HH:mm:ss'))"
+            )
             if code == 0 and output:
-                lines.append(f"**Boot Time:** {output.strip()}")
+                for line in output.strip().split("\n"):
+                    if line.startswith("Uptime:"):
+                        lines.append(f"**{line}**")
+                    elif line.startswith("Boot Time:"):
+                        lines.append(f"**{line}**")
+        else:
+            # Uptime
+            code, output = await self._run_command("uptime")
+            if code == 0 and output:
+                lines.append(f"**Uptime:** {output.strip()}")
 
-        # Load averages
-        code, output = await self._run_command("uptime")
-        if code == 0 and "load average" in output.lower():
-            load = output.split("load average")[-1].replace(":", "").replace("s:", "").strip()
-            lines.append(f"**Load (1/5/15 min):** {load}")
+            # Boot time
+            if self.system == "darwin":
+                code, output = await self._run_command("sysctl -n kern.boottime")
+                if code == 0 and "sec" in output:
+                    try:
+                        # Parse { sec = 1234567890, usec = 0 }
+                        sec = int(output.split("sec = ")[1].split(",")[0])
+                        boot_time = datetime.fromtimestamp(sec)
+                        lines.append(f"**Boot Time:** {boot_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                    except:
+                        pass
+            else:
+                code, output = await self._run_command("uptime -s 2>/dev/null")
+                if code == 0 and output:
+                    lines.append(f"**Boot Time:** {output.strip()}")
+
+            # Load averages
+            code, output = await self._run_command("uptime")
+            if code == 0 and "load average" in output.lower():
+                load = output.split("load average")[-1].replace(":", "").replace("s:", "").strip()
+                lines.append(f"**Load (1/5/15 min):** {load}")
 
         return "\n".join(lines)
 
@@ -516,7 +718,10 @@ No external dependencies required - uses system commands."""
         lines = ["**System Information**\n"]
 
         # Hostname
-        code, output = await self._run_command("hostname")
+        if self.system == "windows":
+            code, output = await self._run_powershell("$env:COMPUTERNAME")
+        else:
+            code, output = await self._run_command("hostname")
         if code == 0:
             lines.append(f"**Hostname:** {output.strip()}")
 
@@ -527,8 +732,22 @@ No external dependencies required - uses system commands."""
         # Architecture
         lines.append(f"**Architecture:** {platform.machine()}")
 
-        # Kernel
-        if self.system == "linux":
+        if self.system == "windows":
+            # Windows version details
+            code, output = await self._run_powershell(
+                "(Get-CimInstance Win32_OperatingSystem).Caption"
+            )
+            if code == 0 and output:
+                lines.append(f"**Windows Version:** {output.strip()}")
+
+            # Build number
+            code, output = await self._run_powershell(
+                "(Get-CimInstance Win32_OperatingSystem).BuildNumber"
+            )
+            if code == 0 and output:
+                lines.append(f"**Build:** {output.strip()}")
+
+        elif self.system == "linux":
             code, output = await self._run_command("uname -r")
             if code == 0:
                 lines.append(f"**Kernel:** {output.strip()}")
@@ -544,34 +763,68 @@ No external dependencies required - uses system commands."""
                 lines.append(f"**macOS Version:** {output.strip()}")
 
         # Current user
-        lines.append(f"**User:** {os.getenv('USER', 'unknown')}")
+        if self.system == "windows":
+            lines.append(f"**User:** {os.getenv('USERNAME', 'unknown')}")
+        else:
+            lines.append(f"**User:** {os.getenv('USER', 'unknown')}")
 
         return "\n".join(lines)
 
     async def _services(self) -> str:
-        """List running services (Linux systemd)."""
-        if self.system != "linux":
-            return "Services listing is only available on Linux with systemd."
-
+        """List running services."""
         lines = ["**Running Services**\n"]
 
-        code, output = await self._run_command(
-            "systemctl list-units --type=service --state=running --no-pager --no-legend | head -20"
-        )
+        if self.system == "windows":
+            code, output = await self._run_powershell(
+                "Get-Service | Where-Object {$_.Status -eq 'Running'} | "
+                "Select-Object -First 20 | "
+                "ForEach-Object { Write-Output ('{0}|{1}' -f $_.Name, $_.DisplayName) }"
+            )
+            if code == 0 and output:
+                lines.append("| Service | Display Name |")
+                lines.append("|---------|--------------|")
 
-        if code != 0:
-            return "Error: systemd not available or permission denied."
+                for line in output.strip().split("\n"):
+                    if "|" in line:
+                        parts = line.split("|")
+                        if len(parts) >= 2:
+                            name = parts[0][:20]
+                            display = parts[1][:35]
+                            lines.append(f"| {name} | {display} |")
+        elif self.system == "linux":
+            code, output = await self._run_command(
+                "systemctl list-units --type=service --state=running --no-pager --no-legend | head -20"
+            )
 
-        if output:
-            lines.append("| Service | Status |")
-            lines.append("|---------|--------|")
+            if code != 0:
+                return "Error: systemd not available or permission denied."
 
-            for line in output.strip().split("\n"):
-                parts = line.split()
-                if len(parts) >= 4:
-                    service = parts[0].replace(".service", "")
-                    status = parts[3] if len(parts) > 3 else "running"
-                    lines.append(f"| {service} | {status} |")
+            if output:
+                lines.append("| Service | Status |")
+                lines.append("|---------|--------|")
+
+                for line in output.strip().split("\n"):
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        service = parts[0].replace(".service", "")
+                        status = parts[3] if len(parts) > 3 else "running"
+                        lines.append(f"| {service} | {status} |")
+        else:
+            # macOS - use launchctl
+            code, output = await self._run_command(
+                "launchctl list | head -20"
+            )
+            if code == 0 and output:
+                lines.append("| PID | Status | Label |")
+                lines.append("|-----|--------|-------|")
+
+                for line in output.strip().split("\n")[1:]:  # Skip header
+                    parts = line.split("\t")
+                    if len(parts) >= 3:
+                        pid = parts[0] if parts[0] != "-" else "-"
+                        status = parts[1]
+                        label = parts[2][:40]
+                        lines.append(f"| {pid} | {status} | {label} |")
 
         return "\n".join(lines)
 
@@ -579,40 +832,66 @@ No external dependencies required - uses system commands."""
         """List listening ports."""
         lines = ["**Listening Ports**\n"]
 
-        if self.system == "darwin":
-            cmd = "lsof -iTCP -sTCP:LISTEN -P -n | tail -20"
+        if self.system == "windows":
+            code, output = await self._run_powershell(
+                "Get-NetTCPConnection -State Listen | "
+                "Select-Object -First 20 | "
+                "ForEach-Object { "
+                "$proc = (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName; "
+                "Write-Output ('{0}|{1}' -f $_.LocalPort, $proc) "
+                "}"
+            )
+            if code == 0 and output:
+                lines.append("| Port | Process |")
+                lines.append("|------|---------|")
+
+                seen_ports = set()
+                for line in output.strip().split("\n"):
+                    if "|" in line:
+                        parts = line.split("|")
+                        if len(parts) >= 2:
+                            port = parts[0]
+                            proc = parts[1] if parts[1] else "-"
+                            if port not in seen_ports:
+                                seen_ports.add(port)
+                                lines.append(f"| {port} | {proc} |")
+
+        elif self.system == "darwin":
+            code, output = await self._run_command("lsof -iTCP -sTCP:LISTEN -P -n | tail -20")
+            if code == 0 and output:
+                lines.append("| Port | Process |")
+                lines.append("|------|---------|")
+
+                seen_ports = set()
+                for line in output.strip().split("\n")[1:]:  # Skip header
+                    parts = line.split()
+                    if len(parts) >= 9:
+                        process = parts[0]
+                        port_info = parts[8]
+                        if ":" in port_info:
+                            port = port_info.split(":")[-1]
+                            if port not in seen_ports:
+                                seen_ports.add(port)
+                                lines.append(f"| {port} | {process} |")
         else:
-            cmd = "ss -tlnp 2>/dev/null | tail -20"
+            code, output = await self._run_command("ss -tlnp 2>/dev/null | tail -20")
+            if code != 0 or not output:
+                code, output = await self._run_command("netstat -tlnp 2>/dev/null | grep LISTEN | head -20")
 
-        code, output = await self._run_command(cmd)
+            if code == 0 and output:
+                lines.append("| Port | Process |")
+                lines.append("|------|---------|")
 
-        if code != 0 or not output:
-            # Fallback
-            code, output = await self._run_command("netstat -tlnp 2>/dev/null | grep LISTEN | head -20")
-
-        if code == 0 and output:
-            lines.append("| Port | Process |")
-            lines.append("|------|---------|")
-
-            seen_ports = set()
-            for line in output.strip().split("\n")[1:]:  # Skip header
-                parts = line.split()
-                if self.system == "darwin" and len(parts) >= 9:
-                    process = parts[0]
-                    port_info = parts[8]
-                    if ":" in port_info:
-                        port = port_info.split(":")[-1]
-                        if port not in seen_ports:
-                            seen_ports.add(port)
-                            lines.append(f"| {port} | {process} |")
-                elif len(parts) >= 4:
-                    # Linux ss output
-                    local = parts[3] if len(parts) > 3 else ""
-                    if ":" in local:
-                        port = local.split(":")[-1]
-                        process = parts[-1] if "users" in line else "-"
-                        if port not in seen_ports:
-                            seen_ports.add(port)
-                            lines.append(f"| {port} | {process[:30]} |")
+                seen_ports = set()
+                for line in output.strip().split("\n")[1:]:  # Skip header
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        local = parts[3] if len(parts) > 3 else ""
+                        if ":" in local:
+                            port = local.split(":")[-1]
+                            process = parts[-1] if "users" in line else "-"
+                            if port not in seen_ports:
+                                seen_ports.add(port)
+                                lines.append(f"| {port} | {process[:30]} |")
 
         return "\n".join(lines)
