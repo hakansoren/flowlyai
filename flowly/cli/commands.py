@@ -360,16 +360,31 @@ def gateway(
     # Create gateway API server for voice bridge
     async def on_voice_message(call_sid: str, from_number: str, text: str) -> str:
         """Handle voice message from voice bridge."""
-        # Format message with clear voice context
-        # This helps the agent understand it's in a voice call and should speak naturally
-        prompt = f"""[ACTIVE VOICE CALL - Call ID: {call_sid}]
-[Caller: {from_number}]
-[User said]: {text}
+        # Use Telegram session if configured, otherwise use voice-specific session
+        telegram_chat_id = config.integrations.voice.telegram_chat_id
+        if telegram_chat_id:
+            session_key = f"telegram:{telegram_chat_id}"
+        else:
+            session_key = f"voice:{call_sid}"
 
-Remember: You are speaking on a phone call. The user can ONLY hear your text response.
-If you use any tools, verbally explain what you're doing and the results."""
-        response = await agent.process_direct(prompt, session_key=f"voice:{call_sid}")
-        return response or "Üzgünüm, bunu işleyemedim. Lütfen tekrar deneyin."
+        # Format message with clear voice context
+        prompt = f"""[AKTİF TELEFON GÖRÜŞMESI]
+Call SID: {call_sid}
+Arayan: {from_number}
+
+Kullanıcı şunu söyledi: "{text}"
+
+ÖNEMLİ KURALLAR:
+1. TÜRKÇE KONUŞ - Kullanıcı Türkçe konuşuyor, sen de Türkçe yanıt ver.
+2. Bu bir telefon görüşmesi - kullanıcı sadece senin söylediklerini duyuyor.
+3. Tool kullanabilirsin (screenshot, exec, web_search, cron vb.) - kullan ve sonucu söyle.
+4. Screenshot alırsan otomatik Telegram'a gider, kullanıcıya "ekran görüntüsünü Telegram'a gönderdim" de.
+5. Aramayı kapatmak için: voice_call(action="end_call", call_sid="{call_sid}", message="Görüşürüz!")
+6. Kısa ve net konuş - telefonda uzun cümleler zor anlaşılır.
+
+Şimdi kullanıcıya Türkçe yanıt ver:"""
+        response = await agent.process_direct(prompt, session_key=session_key)
+        return response or "Üzgünüm, bir sorun oluştu. Tekrar söyler misin?"
 
     gateway_server = GatewayServer(
         host=config.gateway.host,

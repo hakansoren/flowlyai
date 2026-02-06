@@ -473,19 +473,25 @@ class AgentLoop:
     
     async def process_direct(self, content: str, session_key: str = "cli:direct") -> str:
         """
-        Process a message directly (for CLI usage).
+        Process a message directly (for CLI usage or voice calls).
 
         Args:
             content: The message content.
-            session_key: Session identifier.
+            session_key: Session identifier in format "channel:chat_id".
 
         Returns:
             The agent's response.
         """
+        # Parse session_key to extract channel and chat_id
+        if ":" in session_key:
+            channel, chat_id = session_key.split(":", 1)
+        else:
+            channel, chat_id = "cli", session_key
+
         msg = InboundMessage(
-            channel="cli",
+            channel=channel,
             sender_id="user",
-            chat_id="direct",
+            chat_id=chat_id,
             content=content
         )
 

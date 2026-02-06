@@ -128,6 +128,9 @@ class VoiceBridgeConfig(BaseModel):
     # Webhook URL (public URL for Twilio callbacks)
     webhook_base_url: str = ""
 
+    # Link voice calls to Telegram session (for screenshots, messages etc.)
+    telegram_chat_id: str = ""  # Your Telegram chat ID - voice calls will use this session
+
     # STT/TTS settings
     stt_provider: str = "groq"  # groq, deepgram, openai, or elevenlabs
     tts_provider: str = "elevenlabs"  # openai, deepgram, or elevenlabs
