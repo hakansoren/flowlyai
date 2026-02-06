@@ -6,14 +6,16 @@ import { EventEmitter } from 'events';
 import { Logger } from 'pino';
 import { DeepgramSTT, createDeepgramSTT } from './deepgram.js';
 import { OpenAISTT, createOpenAISTT } from './openai.js';
+import { GroqSTT, createGroqSTT } from './groq.js';
 import type { STTResult } from '../types.js';
 
-export type STTProvider = DeepgramSTT | OpenAISTT;
+export type STTProvider = DeepgramSTT | OpenAISTT | GroqSTT;
 
 export interface STTOptions {
-  provider: 'deepgram' | 'openai';
+  provider: 'deepgram' | 'openai' | 'groq';
   deepgramApiKey?: string;
   openaiApiKey?: string;
+  groqApiKey?: string;
   language?: string;
   logger?: Logger;
 }
@@ -43,9 +45,19 @@ export function createSTT(options: STTOptions): STTProvider {
         logger: options.logger,
       });
 
+    case 'groq':
+      if (!options.groqApiKey) {
+        throw new Error('Groq API key is required');
+      }
+      return createGroqSTT({
+        apiKey: options.groqApiKey,
+        language: options.language,
+        logger: options.logger,
+      });
+
     default:
       throw new Error(`Unknown STT provider: ${options.provider}`);
   }
 }
 
-export { DeepgramSTT, OpenAISTT, STTResult };
+export { DeepgramSTT, OpenAISTT, GroqSTT, STTResult };

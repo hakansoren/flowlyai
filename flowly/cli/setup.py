@@ -328,15 +328,21 @@ def setup_voice_calls() -> bool:
 
     # STT Provider
     console.print("\n[bold]Choose STT (Speech-to-Text) provider:[/bold]")
-    console.print("  [cyan]1.[/cyan] Deepgram [dim](recommended, real-time)[/dim]")
-    console.print("  [cyan]2.[/cyan] OpenAI Whisper [dim](batch processing)[/dim]")
+    console.print("  [cyan]1.[/cyan] Groq Whisper [dim](recommended, fast)[/dim]")
+    console.print("  [cyan]2.[/cyan] Deepgram [dim](real-time streaming)[/dim]")
+    console.print("  [cyan]3.[/cyan] OpenAI Whisper [dim](batch processing)[/dim]")
 
-    stt_choice = Prompt.ask("Choose STT", choices=["1", "2"], default="1")
-    stt_provider = "deepgram" if stt_choice == "1" else "openai"
+    stt_choice = Prompt.ask("Choose STT", choices=["1", "2", "3"], default="1")
+    stt_map = {"1": "groq", "2": "deepgram", "3": "openai"}
+    stt_provider = stt_map[stt_choice]
 
-    # Deepgram API key if selected
+    # API key based on provider
     deepgram_key = ""
-    if stt_provider == "deepgram":
+    groq_key = ""
+    if stt_provider == "groq":
+        console.print("\n[dim]Get Groq API key at: https://console.groq.com/keys[/dim]")
+        groq_key = Prompt.ask("Enter Groq API key").strip()
+    elif stt_provider == "deepgram":
         console.print("\n[dim]Get Deepgram API key at: https://console.deepgram.com[/dim]")
         deepgram_key = Prompt.ask("Enter Deepgram API key").strip()
 
@@ -363,6 +369,7 @@ def setup_voice_calls() -> bool:
     config.integrations.voice.twilio_phone_number = phone_number
     config.integrations.voice.webhook_base_url = webhook_url
     config.integrations.voice.stt_provider = stt_provider
+    config.integrations.voice.groq_api_key = groq_key
     config.integrations.voice.deepgram_api_key = deepgram_key
     config.integrations.voice.tts_voice = tts_voice
     config.integrations.voice.language = language

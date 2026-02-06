@@ -186,6 +186,7 @@ export class CallManager extends EventEmitter {
       provider: this.config.stt.provider,
       deepgramApiKey: this.config.stt.deepgramApiKey,
       openaiApiKey: this.config.stt.openaiApiKey,
+      groqApiKey: this.config.stt.groqApiKey,
       language: this.config.stt.language,
       logger: this.logger,
     });

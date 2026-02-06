@@ -129,8 +129,9 @@ class VoiceBridgeConfig(BaseModel):
     webhook_base_url: str = ""
 
     # STT/TTS settings
-    stt_provider: str = "deepgram"  # deepgram or openai
-    deepgram_api_key: str = ""
+    stt_provider: str = "groq"  # groq, deepgram, or openai
+    groq_api_key: str = ""  # For Groq Whisper STT
+    deepgram_api_key: str = ""  # For Deepgram STT
     tts_voice: str = "nova"  # OpenAI TTS voice
     language: str = "en-US"
 

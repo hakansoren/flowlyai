@@ -25,9 +25,10 @@ export const ConfigSchema = z.object({
 
   // STT (Speech-to-Text)
   stt: z.object({
-    provider: z.enum(['deepgram', 'openai']).default('deepgram'),
+    provider: z.enum(['deepgram', 'openai', 'groq']).default('deepgram'),
     deepgramApiKey: z.string().optional(),
     openaiApiKey: z.string().optional(),
+    groqApiKey: z.string().optional(),
     language: z.string().default('en-US'),
   }),
 
@@ -69,6 +70,7 @@ export function loadConfig(): Config {
       provider: process.env.STT_PROVIDER || 'deepgram',
       deepgramApiKey: process.env.DEEPGRAM_API_KEY,
       openaiApiKey: process.env.OPENAI_API_KEY,
+      groqApiKey: process.env.GROQ_API_KEY,
       language: process.env.LANGUAGE || 'en-US',
     },
     tts: {
@@ -96,6 +98,10 @@ export function validateProviderConfig(config: Config): void {
 
   if (config.stt.provider === 'openai' && !config.stt.openaiApiKey) {
     throw new Error('OPENAI_API_KEY is required when STT_PROVIDER=openai');
+  }
+
+  if (config.stt.provider === 'groq' && !config.stt.groqApiKey) {
+    throw new Error('GROQ_API_KEY is required when STT_PROVIDER=groq');
   }
 
   if (config.tts.provider === 'openai' && !config.tts.openaiApiKey) {
