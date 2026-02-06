@@ -275,6 +275,110 @@ def setup_trello() -> bool:
     return True
 
 
+def setup_voice_calls() -> bool:
+    """
+    Interactive voice calls (Twilio) setup wizard.
+
+    Returns True if setup was successful.
+    """
+    from flowly.config.loader import load_config, save_config
+
+    console.print("\n[bold cyan]📞 Voice Calls Setup (Twilio)[/bold cyan]")
+    console.print("─" * 40)
+
+    config = load_config()
+    voice_cfg = config.integrations.voice
+
+    if voice_cfg.enabled and voice_cfg.twilio_account_sid:
+        console.print(f"\n[green]✓[/green] Already configured")
+        console.print(f"  Account SID: {voice_cfg.twilio_account_sid[:10]}...")
+        console.print(f"  Phone: {voice_cfg.twilio_phone_number}")
+        if not Confirm.ask("Reconfigure?", default=False):
+            return True
+
+    console.print("\n[dim]To get Twilio credentials:[/dim]")
+    console.print("  1. Sign up at [cyan]https://www.twilio.com[/cyan]")
+    console.print("  2. Go to Console → Account Info")
+    console.print("  3. Copy Account SID and Auth Token")
+    console.print("  4. Buy or verify a phone number")
+    console.print()
+
+    # Account SID
+    account_sid = Prompt.ask("Enter Twilio Account SID").strip()
+    if not account_sid:
+        console.print("[yellow]Skipped - voice calls disabled[/yellow]")
+        return True
+
+    # Auth Token
+    auth_token = Prompt.ask("Enter Twilio Auth Token", password=True).strip()
+    if not auth_token:
+        console.print("[yellow]Skipped - voice calls disabled[/yellow]")
+        return True
+
+    # Phone Number
+    phone_number = Prompt.ask("Enter Twilio Phone Number (e.g., +1234567890)").strip()
+    if not phone_number:
+        console.print("[yellow]Skipped - voice calls disabled[/yellow]")
+        return True
+
+    # Webhook URL
+    console.print("\n[dim]Voice calls require a public webhook URL for Twilio.[/dim]")
+    console.print("[dim]Use ngrok or similar for local development.[/dim]")
+    webhook_url = Prompt.ask("Enter webhook base URL (e.g., https://your-domain.com)").strip()
+
+    # STT Provider
+    console.print("\n[bold]Choose STT (Speech-to-Text) provider:[/bold]")
+    console.print("  [cyan]1.[/cyan] Deepgram [dim](recommended, real-time)[/dim]")
+    console.print("  [cyan]2.[/cyan] OpenAI Whisper [dim](batch processing)[/dim]")
+
+    stt_choice = Prompt.ask("Choose STT", choices=["1", "2"], default="1")
+    stt_provider = "deepgram" if stt_choice == "1" else "openai"
+
+    # Deepgram API key if selected
+    deepgram_key = ""
+    if stt_provider == "deepgram":
+        console.print("\n[dim]Get Deepgram API key at: https://console.deepgram.com[/dim]")
+        deepgram_key = Prompt.ask("Enter Deepgram API key").strip()
+
+    # TTS Voice
+    console.print("\n[bold]Choose TTS voice (OpenAI):[/bold]")
+    console.print("  [cyan]1.[/cyan] nova [dim](neutral, natural)[/dim]")
+    console.print("  [cyan]2.[/cyan] alloy [dim](neutral)[/dim]")
+    console.print("  [cyan]3.[/cyan] shimmer [dim](soft, warm)[/dim]")
+    console.print("  [cyan]4.[/cyan] echo [dim](deep)[/dim]")
+    console.print("  [cyan]5.[/cyan] fable [dim](British)[/dim]")
+    console.print("  [cyan]6.[/cyan] onyx [dim](authoritative)[/dim]")
+
+    voice_choice = Prompt.ask("Choose voice", choices=["1", "2", "3", "4", "5", "6"], default="1")
+    voice_map = {"1": "nova", "2": "alloy", "3": "shimmer", "4": "echo", "5": "fable", "6": "onyx"}
+    tts_voice = voice_map[voice_choice]
+
+    # Language
+    language = Prompt.ask("Enter language code", default="en-US").strip()
+
+    # Save to config
+    config.integrations.voice.enabled = True
+    config.integrations.voice.twilio_account_sid = account_sid
+    config.integrations.voice.twilio_auth_token = auth_token
+    config.integrations.voice.twilio_phone_number = phone_number
+    config.integrations.voice.webhook_base_url = webhook_url
+    config.integrations.voice.stt_provider = stt_provider
+    config.integrations.voice.deepgram_api_key = deepgram_key
+    config.integrations.voice.tts_voice = tts_voice
+    config.integrations.voice.language = language
+    save_config(config)
+
+    console.print("\n[green]✓[/green] Voice calls configuration saved")
+    console.print("\n[dim]Next steps:[/dim]")
+    console.print("  1. Start the voice bridge: [cyan]cd voice-bridge && npm start[/cyan]")
+    console.print("  2. Start Flowly gateway: [cyan]flowly gateway[/cyan]")
+    console.print("\n[dim]The agent can now make calls with:[/dim]")
+    console.print("  • Call +1234567890 and say hello")
+    console.print("  • Make a voice call to [phone number]")
+
+    return True
+
+
 def setup_all() -> None:
     """Run the complete setup wizard."""
     from flowly import __logo__
@@ -282,27 +386,34 @@ def setup_all() -> None:
     console.print(f"\n{__logo__} [bold]Flowly Setup Wizard[/bold]\n")
 
     # LLM Provider (required)
-    console.print("[bold]Step 1/4: LLM Provider[/bold]")
+    console.print("[bold]Step 1/5: LLM Provider[/bold]")
     if not setup_openrouter():
         console.print("[red]LLM setup failed. Cannot continue.[/red]")
         return
 
     # Telegram (optional)
-    console.print("\n[bold]Step 2/4: Telegram Bot[/bold]")
+    console.print("\n[bold]Step 2/5: Telegram Bot[/bold]")
     if Confirm.ask("Set up Telegram bot?", default=True):
         setup_telegram()
     else:
         console.print("[dim]Skipped[/dim]")
 
-    # Voice (optional)
-    console.print("\n[bold]Step 3/4: Voice Transcription[/bold]")
+    # Voice transcription (optional)
+    console.print("\n[bold]Step 3/5: Voice Transcription[/bold]")
     if Confirm.ask("Set up voice transcription (Groq)?", default=True):
         setup_voice()
     else:
         console.print("[dim]Skipped[/dim]")
 
+    # Voice calls (optional)
+    console.print("\n[bold]Step 4/5: Voice Calls (Twilio)[/bold]")
+    if Confirm.ask("Set up voice calls (requires Twilio account)?", default=False):
+        setup_voice_calls()
+    else:
+        console.print("[dim]Skipped[/dim]")
+
     # Trello (optional)
-    console.print("\n[bold]Step 4/4: Trello Integration[/bold]")
+    console.print("\n[bold]Step 5/5: Trello Integration[/bold]")
     if Confirm.ask("Set up Trello integration?", default=False):
         setup_trello()
     else:

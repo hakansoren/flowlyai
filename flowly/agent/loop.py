@@ -22,6 +22,7 @@ from flowly.agent.tools.cron import CronTool
 from flowly.agent.tools.trello import TrelloTool
 from flowly.agent.tools.docker import DockerTool
 from flowly.agent.tools.system import SystemTool
+from flowly.agent.tools.voice import VoiceCallTool
 from flowly.agent.subagent import SubagentManager
 from flowly.session.manager import SessionManager
 from flowly.cron.service import CronService
@@ -29,7 +30,7 @@ from flowly.compaction.service import CompactionService
 from flowly.compaction.types import CompactionConfig, MemoryFlushConfig
 from flowly.compaction.estimator import estimate_messages_tokens
 from flowly.exec.types import ExecConfig
-from flowly.config.schema import TrelloConfig
+from flowly.config.schema import TrelloConfig, VoiceBridgeConfig
 
 
 class AgentLoop:
@@ -57,6 +58,7 @@ class AgentLoop:
         compaction_config: CompactionConfig | None = None,
         exec_config: ExecConfig | None = None,
         trello_config: TrelloConfig | None = None,
+        voice_config: VoiceBridgeConfig | None = None,
     ):
         self.bus = bus
         self.provider = provider
@@ -90,6 +92,9 @@ class AgentLoop:
 
         # Trello config
         self.trello_config = trello_config
+
+        # Voice config
+        self.voice_config = voice_config
 
         self._running = False
         self._register_default_tools()
@@ -140,6 +145,10 @@ class AgentLoop:
 
         # System monitoring tool
         self.tools.register(SystemTool())
+
+        # Voice call tool (if configured)
+        if self.voice_config and self.voice_config.enabled:
+            self.tools.register(VoiceCallTool(bridge_url=self.voice_config.bridge_url))
     
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""

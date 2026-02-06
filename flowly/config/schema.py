@@ -115,9 +115,30 @@ class TrelloConfig(BaseModel):
     token: str = ""  # Generate from the same page
 
 
+class VoiceBridgeConfig(BaseModel):
+    """Voice bridge configuration for Twilio calls."""
+    enabled: bool = False
+    bridge_url: str = "http://localhost:8765"  # Voice bridge API URL
+
+    # Twilio settings (used by voice-bridge, stored here for setup wizard)
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_phone_number: str = ""
+
+    # Webhook URL (public URL for Twilio callbacks)
+    webhook_base_url: str = ""
+
+    # STT/TTS settings
+    stt_provider: str = "deepgram"  # deepgram or openai
+    deepgram_api_key: str = ""
+    tts_voice: str = "nova"  # OpenAI TTS voice
+    language: str = "en-US"
+
+
 class IntegrationsConfig(BaseModel):
     """External integrations configuration."""
     trello: TrelloConfig = Field(default_factory=TrelloConfig)
+    voice: VoiceBridgeConfig = Field(default_factory=VoiceBridgeConfig)
 
 
 class ToolsConfig(BaseModel):

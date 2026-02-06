@@ -64,6 +64,13 @@ def setup_voice_cmd():
     setup_voice()
 
 
+@setup_app.command("voice-calls")
+def setup_voice_calls_cmd():
+    """Set up voice calls (Twilio)."""
+    from flowly.cli.setup import setup_voice_calls
+    setup_voice_calls()
+
+
 @setup_app.command("openrouter")
 def setup_openrouter_cmd():
     """Set up OpenRouter LLM provider."""
@@ -280,6 +287,7 @@ def gateway(
         compaction_config=compaction_config,
         exec_config=exec_config,
         trello_config=config.integrations.trello,
+        voice_config=config.integrations.voice,
     )
 
     # Set cron job callback (needs agent to be created first)
@@ -439,6 +447,7 @@ def agent(
         compaction_config=compaction_config,
         exec_config=exec_config,
         trello_config=config.integrations.trello,
+        voice_config=config.integrations.voice,
     )
 
     async def handle_compact(instructions: str | None = None) -> None:
