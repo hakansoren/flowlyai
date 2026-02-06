@@ -1,8 +1,8 @@
 /**
  * ElevenLabs STT (Speech-to-Text) provider.
  *
- * Uses ElevenLabs' Realtime Speech-to-Text WebSocket API.
- * Provides streaming transcription with low latency.
+ * Uses ElevenLabs' Realtime Speech-to-Text WebSocket API (Scribe v2).
+ * Provides streaming transcription with ~150ms latency.
  */
 
 import { EventEmitter } from 'events';
@@ -17,14 +17,49 @@ export interface ElevenLabsSTTOptions {
   logger?: Logger;
 }
 
-interface ElevenLabsMessage {
-  type: string;
-  text?: string;
-  is_final?: boolean;
-  confidence?: number;
-  language?: string;
-  error?: string;
+// ElevenLabs message types
+interface SessionStartedMessage {
+  message_type: 'session_started';
+  session_id: string;
+  model_id: string;
+  sample_rate: number;
+  audio_format: string;
+  language_code: string;
 }
+
+interface PartialTranscriptMessage {
+  message_type: 'partial_transcript';
+  text: string;
+}
+
+interface CommittedTranscriptMessage {
+  message_type: 'committed_transcript';
+  text: string;
+}
+
+interface CommittedTranscriptWithTimestampsMessage {
+  message_type: 'committed_transcript_with_timestamps';
+  text: string;
+  language: string;
+  words: Array<{
+    text: string;
+    start: number;
+    end: number;
+  }>;
+}
+
+interface ErrorMessage {
+  message_type: 'auth_error' | 'quota_exceeded' | 'rate_limited' | 'input_error' | 'error';
+  error?: string;
+  message?: string;
+}
+
+type ElevenLabsMessage =
+  | SessionStartedMessage
+  | PartialTranscriptMessage
+  | CommittedTranscriptMessage
+  | CommittedTranscriptWithTimestampsMessage
+  | ErrorMessage;
 
 export class ElevenLabsSTT extends EventEmitter {
   private apiKey: string;
@@ -36,6 +71,7 @@ export class ElevenLabsSTT extends EventEmitter {
   private reconnectAttempts = 0;
   private readonly MAX_RECONNECT_ATTEMPTS = 3;
   private pendingAudio: Buffer[] = [];
+  private sessionId: string | null = null;
 
   constructor(options: ElevenLabsSTTOptions) {
     super();
@@ -43,7 +79,7 @@ export class ElevenLabsSTT extends EventEmitter {
     // ElevenLabs uses ISO 639-1 codes (e.g., 'en', 'tr')
     const lang = options.language || 'en';
     this.language = lang.split('-')[0];
-    this.model = options.model || 'scribe_v1'; // ElevenLabs Scribe model
+    this.model = options.model || 'scribe_v2_realtime';
     this.logger = options.logger;
   }
 
@@ -54,14 +90,14 @@ export class ElevenLabsSTT extends EventEmitter {
     return new Promise((resolve, reject) => {
       try {
         // Build WebSocket URL with parameters
+        // Audio format: pcm_16000 (16kHz PCM, which matches Twilio's format after conversion)
         const params = new URLSearchParams({
           model_id: this.model,
           language_code: this.language,
-          sample_rate: '16000', // We send 16kHz audio
-          encoding: 'pcm_s16le', // 16-bit signed PCM
+          audio_format: 'pcm_16000',
         });
 
-        const url = `wss://api.elevenlabs.io/v1/speech-to-text/stream?${params.toString()}`;
+        const url = `wss://api.elevenlabs.io/v1/speech-to-text/realtime?${params.toString()}`;
 
         this.ws = new WebSocket(url, {
           headers: {
@@ -76,7 +112,7 @@ export class ElevenLabsSTT extends EventEmitter {
 
           // Send any pending audio
           for (const audio of this.pendingAudio) {
-            this.ws?.send(audio);
+            this.sendAudioChunk(audio);
           }
           this.pendingAudio = [];
 
@@ -95,6 +131,7 @@ export class ElevenLabsSTT extends EventEmitter {
 
         this.ws.on('close', (code, reason) => {
           this.isConnected = false;
+          this.sessionId = null;
           this.logger?.info({ code, reason: reason.toString() }, 'ElevenLabs STT WebSocket closed');
 
           // Try to reconnect if not intentional close
@@ -125,40 +162,82 @@ export class ElevenLabsSTT extends EventEmitter {
    * Handle incoming WebSocket messages.
    */
   private handleMessage(message: ElevenLabsMessage): void {
-    switch (message.type) {
-      case 'transcript':
+    switch (message.message_type) {
+      case 'session_started':
+        this.sessionId = message.session_id;
+        this.logger?.info({ sessionId: message.session_id, model: message.model_id }, 'ElevenLabs STT session started');
+        break;
+
+      case 'partial_transcript':
         if (message.text) {
           const result: STTResult = {
             text: message.text,
-            confidence: message.confidence || 1.0,
-            isFinal: message.is_final || false,
+            confidence: 1.0,
+            isFinal: false,
           };
-
-          this.logger?.debug({ text: message.text, isFinal: message.is_final }, 'ElevenLabs transcript');
-
+          this.logger?.debug({ text: message.text }, 'ElevenLabs partial transcript');
           this.emit('transcript', result);
-
-          if (result.isFinal) {
-            this.emit('final_transcript', result);
-          }
         }
         break;
 
+      case 'committed_transcript':
+        if (message.text) {
+          const result: STTResult = {
+            text: message.text,
+            confidence: 1.0,
+            isFinal: true,
+          };
+          this.logger?.info({ text: message.text }, 'ElevenLabs final transcript');
+          this.emit('transcript', result);
+          this.emit('final_transcript', result);
+        }
+        break;
+
+      case 'committed_transcript_with_timestamps':
+        if (message.text) {
+          const result: STTResult = {
+            text: message.text,
+            confidence: 1.0,
+            isFinal: true,
+          };
+          this.logger?.info({ text: message.text, language: message.language }, 'ElevenLabs final transcript with timestamps');
+          this.emit('transcript', result);
+          this.emit('final_transcript', result);
+        }
+        break;
+
+      case 'auth_error':
+      case 'quota_exceeded':
+      case 'rate_limited':
+      case 'input_error':
       case 'error':
-        this.logger?.error({ error: message.error }, 'ElevenLabs STT error');
-        this.emit('error', new Error(message.error || 'Unknown ElevenLabs STT error'));
-        break;
-
-      case 'session_started':
-        this.logger?.debug('ElevenLabs STT session started');
-        break;
-
-      case 'session_ended':
-        this.logger?.debug('ElevenLabs STT session ended');
+        const errorMsg = message.error || message.message || `ElevenLabs STT error: ${message.message_type}`;
+        this.logger?.error({ type: message.message_type, error: errorMsg }, 'ElevenLabs STT error');
+        this.emit('error', new Error(errorMsg));
         break;
 
       default:
-        this.logger?.debug({ type: message.type }, 'Unknown ElevenLabs message type');
+        this.logger?.debug({ message }, 'Unknown ElevenLabs message type');
+    }
+  }
+
+  /**
+   * Send an audio chunk in the correct format.
+   */
+  private sendAudioChunk(audioData: Buffer, commit: boolean = false): void {
+    if (!this.ws || !this.isConnected) return;
+
+    try {
+      // ElevenLabs expects base64-encoded audio in a JSON message
+      const message = {
+        message_type: 'input_audio_chunk',
+        audio_base_64: audioData.toString('base64'),
+        commit: commit,
+      };
+
+      this.ws.send(JSON.stringify(message));
+    } catch (error) {
+      this.logger?.error({ error }, 'Failed to send audio chunk to ElevenLabs STT');
     }
   }
 
@@ -173,12 +252,7 @@ export class ElevenLabsSTT extends EventEmitter {
       return;
     }
 
-    try {
-      // ElevenLabs expects raw audio bytes
-      this.ws.send(audioData);
-    } catch (error) {
-      this.logger?.error({ error }, 'Failed to send audio to ElevenLabs STT');
-    }
+    this.sendAudioChunk(audioData);
   }
 
   /**
@@ -187,8 +261,13 @@ export class ElevenLabsSTT extends EventEmitter {
   finalize(): void {
     if (this.ws && this.isConnected) {
       try {
-        // Send end-of-stream message
-        this.ws.send(JSON.stringify({ type: 'end_of_stream' }));
+        // Send a commit message to finalize transcription
+        const message = {
+          message_type: 'input_audio_chunk',
+          audio_base_64: '',
+          commit: true,
+        };
+        this.ws.send(JSON.stringify(message));
       } catch (error) {
         this.logger?.error({ error }, 'Failed to finalize ElevenLabs STT');
       }
@@ -204,6 +283,7 @@ export class ElevenLabsSTT extends EventEmitter {
       this.ws = null;
     }
     this.isConnected = false;
+    this.sessionId = null;
     this.pendingAudio = [];
     this.logger?.info('ElevenLabs STT disconnected');
     this.emit('disconnected');
