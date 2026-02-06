@@ -58,8 +58,10 @@ def is_safe_executable(value: str | None) -> bool:
 
 def resolve_executable(name: str) -> str | None:
     """Resolve an executable name to its full path."""
-    # If it's already a path
-    if '/' in name:
+    import os
+
+    # If it's already a path (check both Unix and Windows separators)
+    if '/' in name or '\\' in name or os.sep in name:
         path = Path(name).expanduser().resolve()
         if path.exists() and path.is_file():
             return str(path)
@@ -71,8 +73,10 @@ def resolve_executable(name: str) -> str | None:
 
 def is_safe_bin(executable: str, args: list[str]) -> bool:
     """Check if command is a safe stdin-only binary with safe args."""
-    # Get basename
-    name = Path(executable).name if '/' in executable else executable
+    import os
+
+    # Get basename (handle both Unix and Windows paths)
+    name = Path(executable).name if ('/' in executable or '\\' in executable or os.sep in executable) else executable
 
     if name not in DEFAULT_SAFE_BINS:
         return False

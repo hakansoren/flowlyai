@@ -23,11 +23,31 @@
 
 ## 📦 Install
 
+### Prerequisites
+
+| Platform | Requirements |
+|----------|--------------|
+| **All** | Python ≥3.11, [uv](https://docs.astral.sh/uv/getting-started/installation/) |
+| **Windows** | Node.js ≥20 (for WhatsApp/Voice) |
+| **macOS/Linux** | Node.js ≥20 (for WhatsApp/Voice) |
+
+### Setup
+
+**macOS/Linux:**
 ```bash
 git clone https://github.com/hakansoren/flowlyai.git
 cd flowlyai
 uv sync
 ```
+
+**Windows (PowerShell):**
+```powershell
+git clone https://github.com/hakansoren/flowlyai.git
+cd flowlyai
+uv sync
+```
+
+> Flowly works seamlessly on Windows, macOS, and Linux.
 
 ## 🚀 Quick Start
 
@@ -156,6 +176,11 @@ uv run flowly gateway
 | `flowly status` | Show status |
 | `flowly channels login` | Link WhatsApp (scan QR) |
 | `flowly channels status` | Show channel status |
+| `flowly voice install` | Install voice bridge dependencies |
+| `flowly voice start` | Start the voice bridge server |
+| `flowly voice status` | Check voice bridge status |
+
+> On Windows, use `uv run flowly <command>` or add the script to your PATH.
 
 ---
 

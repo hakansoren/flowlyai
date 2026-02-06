@@ -1,6 +1,8 @@
 """CLI commands for flowly."""
 
 import asyncio
+import platform
+import shutil
 from pathlib import Path
 
 import typer
@@ -8,6 +10,17 @@ from rich.console import Console
 from rich.table import Table
 
 from flowly import __version__, __logo__
+
+
+def get_npm_command() -> str:
+    """Get the correct npm command for the current platform."""
+    if platform.system() == "Windows":
+        # On Windows, npm might be npm.cmd
+        npm_cmd = shutil.which("npm.cmd") or shutil.which("npm")
+        if npm_cmd:
+            return npm_cmd
+        return "npm.cmd"
+    return "npm"
 
 app = typer.Typer(
     name="flowly",
@@ -622,17 +635,21 @@ def _get_bridge_dir() -> Path:
 
     # Install and build
     try:
+        npm = get_npm_command()
         console.print("  Installing dependencies...")
-        subprocess.run(["npm", "install"], cwd=user_bridge, check=True, capture_output=True)
+        subprocess.run([npm, "install"], cwd=user_bridge, check=True, capture_output=True, shell=(platform.system() == "Windows"))
 
         console.print("  Building...")
-        subprocess.run(["npm", "run", "build"], cwd=user_bridge, check=True, capture_output=True)
+        subprocess.run([npm, "run", "build"], cwd=user_bridge, check=True, capture_output=True, shell=(platform.system() == "Windows"))
 
         console.print("[green]✓[/green] Bridge ready\n")
     except subprocess.CalledProcessError as e:
         console.print(f"[red]Build failed: {e}[/red]")
         if e.stderr:
             console.print(f"[dim]{e.stderr.decode()[:500]}[/dim]")
+        raise typer.Exit(1)
+    except FileNotFoundError:
+        console.print("[red]npm not found. Please install Node.js from https://nodejs.org[/red]")
         raise typer.Exit(1)
 
     return user_bridge
@@ -649,11 +666,12 @@ def channels_login():
     console.print("Scan the QR code to connect.\n")
 
     try:
-        subprocess.run(["npm", "start"], cwd=bridge_dir, check=True)
+        npm = get_npm_command()
+        subprocess.run([npm, "start"], cwd=bridge_dir, check=True, shell=(platform.system() == "Windows"))
     except subprocess.CalledProcessError as e:
         console.print(f"[red]Bridge failed: {e}[/red]")
     except FileNotFoundError:
-        console.print("[red]npm not found. Please install Node.js.[/red]")
+        console.print("[red]npm not found. Please install Node.js from https://nodejs.org[/red]")
 
 
 # ============================================================================

@@ -110,8 +110,13 @@ async function main(): Promise<void> {
     process.exit(0);
   };
 
+  // Cross-platform signal handling
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+  // Windows-specific: handle when the console window is closed
+  if (process.platform === 'win32') {
+    process.on('SIGHUP', shutdown);
+  }
 
   // Start server
   try {
