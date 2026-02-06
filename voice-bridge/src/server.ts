@@ -5,7 +5,8 @@
 import Fastify, { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import fastifyWebsocket from '@fastify/websocket';
 import fastifyFormbody from '@fastify/formbody';
-import { WebSocket } from 'ws';
+// Generic WebSocket type - Fastify WebSocket has different API than 'ws'
+type GenericWebSocket = any;
 import { Logger } from 'pino';
 import { CallManager } from './call-manager.js';
 import type { Config } from './config.js';
@@ -25,6 +26,8 @@ export class VoiceBridgeServer {
   private logger?: Logger;
   private onTranscript?: (callSid: string, text: string) => Promise<string | void>;
 
+  private initialized: Promise<void>;
+
   constructor(options: ServerOptions) {
     this.config = options.config;
     this.callManager = options.callManager;
@@ -35,7 +38,12 @@ export class VoiceBridgeServer {
       logger: this.logger ? { level: this.config.logLevel } : false,
     });
 
-    this.setupPlugins();
+    // Initialize async - plugins must be registered before routes
+    this.initialized = this.initialize();
+  }
+
+  private async initialize(): Promise<void> {
+    await this.setupPlugins();
     this.setupRoutes();
     this.setupCallManagerListeners();
   }
@@ -67,7 +75,9 @@ export class VoiceBridgeServer {
     this.app.post('/voice/gather', this.handleGather.bind(this));
 
     // WebSocket for Media Streams
-    this.app.get('/voice/stream', { websocket: true }, (socket, request) => {
+    // @fastify/websocket passes the ws WebSocket directly as first parameter
+    this.app.get('/voice/stream', { websocket: true }, (socket: GenericWebSocket, request) => {
+      this.logger?.info('WebSocket connection established for media stream');
       this.handleStream(socket, request);
     });
 
@@ -215,16 +225,24 @@ export class VoiceBridgeServer {
    * Handle WebSocket connection for Media Streams.
    */
   private async handleStream(
-    socket: WebSocket,
+    socket: GenericWebSocket,
     _request: FastifyRequest
   ): Promise<void> {
     this.logger?.info('Media stream WebSocket connected');
 
     try {
       await this.callManager.handleMediaStream(socket);
-    } catch (error) {
-      this.logger?.error({ error }, 'Media stream error');
-      socket.close();
+    } catch (error: any) {
+      this.logger?.error({
+        error: error?.message || error,
+        stack: error?.stack,
+        name: error?.name
+      }, 'Media stream error');
+      if (typeof socket.close === 'function') {
+        socket.close();
+      } else if (typeof socket.terminate === 'function') {
+        socket.terminate();
+      }
     }
   }
 
@@ -365,6 +383,9 @@ export class VoiceBridgeServer {
    * Start the server.
    */
   async start(): Promise<void> {
+    // Wait for initialization to complete
+    await this.initialized;
+
     const { host, port } = this.config.webhook;
 
     try {

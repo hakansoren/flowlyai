@@ -15,6 +15,13 @@ export type CallState =
   | 'no-answer'
   | 'canceled';
 
+// Conversation state for agentic behavior
+export type ConversationState =
+  | 'idle'        // Not in active conversation
+  | 'speaking'    // System is speaking
+  | 'listening'   // Waiting for user input
+  | 'processing'; // Processing user input, generating response
+
 export interface CallRecord {
   callSid: string;
   accountSid: string;
@@ -42,6 +49,9 @@ export interface CallRecord {
 
   // Media stream
   streamSid?: string;
+
+  // Conversation state for agentic behavior
+  conversationState?: ConversationState;
 }
 
 export interface TranscriptEntry {

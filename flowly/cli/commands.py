@@ -347,10 +347,16 @@ def gateway(
     # Create gateway API server for voice bridge
     async def on_voice_message(call_sid: str, from_number: str, text: str) -> str:
         """Handle voice message from voice bridge."""
-        # Format message with context
-        prompt = f"[Voice Call from {from_number}]\n{text}"
+        # Format message with clear voice context
+        # This helps the agent understand it's in a voice call and should speak naturally
+        prompt = f"""[ACTIVE VOICE CALL - Call ID: {call_sid}]
+[Caller: {from_number}]
+[User said]: {text}
+
+Remember: You are speaking on a phone call. The user can ONLY hear your text response.
+If you use any tools, verbally explain what you're doing and the results."""
         response = await agent.process_direct(prompt, session_key=f"voice:{call_sid}")
-        return response or "I'm sorry, I couldn't process that."
+        return response or "Üzgünüm, bunu işleyemedim. Lütfen tekrar deneyin."
 
     gateway_server = GatewayServer(
         host=config.gateway.host,

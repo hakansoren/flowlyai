@@ -69,17 +69,38 @@ async function main(): Promise<void> {
 
   // Set up transcript handler (forward to Flowly agent)
   server.setTranscriptHandler(async (callSid, text) => {
-    logger.info({ callSid, text }, 'Transcript received');
+    logger.info({ callSid, text }, 'Transcript received, forwarding to Flowly');
 
-    // TODO: Forward to Flowly agent and get response
-    // For now, just echo back
-    // In production, this would call the Flowly gateway API
-    // to process the message and get a response.
+    try {
+      const gatewayUrl = config.flowly.gatewayUrl;
+      const call = callManager.getCall(callSid);
 
-    // Example: Return a response to speak
-    // return `You said: ${text}. How can I help you with that?`;
+      const response = await fetch(`${gatewayUrl}/api/voice/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          call_sid: callSid,
+          from: call?.from || 'unknown',
+          text: text,
+        }),
+      });
 
-    return undefined; // Don't auto-respond for now
+      if (!response.ok) {
+        throw new Error(`Flowly returned ${response.status}`);
+      }
+
+      const data = await response.json() as { response?: string };
+
+      if (data.response) {
+        logger.info({ callSid, response: data.response.substring(0, 50) }, 'Got agent response');
+        return data.response;
+      }
+
+      return undefined;
+    } catch (error) {
+      logger.error({ error, callSid }, 'Failed to forward to Flowly');
+      return "Üzgünüm, bir hata oluştu. Lütfen tekrar deneyin.";
+    }
   });
 
   // Handle graceful shutdown

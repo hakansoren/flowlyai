@@ -161,7 +161,7 @@ export class TwilioProvider {
 
     const twiml = new TwiMLBuilder()
       .connect()
-      .stream({ url: websocketUrl, track: 'both_tracks' })
+      .stream({ url: websocketUrl, track: 'inbound_track' })
       .endConnect()
       .build();
 

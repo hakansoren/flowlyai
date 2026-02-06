@@ -57,9 +57,13 @@ export class DeepgramTTS {
     const arrayBuffer = await response.arrayBuffer();
     const pcmBuffer = Buffer.from(arrayBuffer);
 
-    this.logger?.debug({ bytes: pcmBuffer.length }, 'Speech synthesized with Deepgram');
+    // Add 200ms of silence at the end to prevent audio cutoff artifacts
+    const silencePadding = Buffer.alloc(24000 * 2 * 0.2); // 200ms at 24kHz 16-bit
+    const paddedBuffer = Buffer.concat([pcmBuffer, silencePadding]);
 
-    return pcmBuffer;
+    this.logger?.debug({ bytes: paddedBuffer.length }, 'Speech synthesized with Deepgram');
+
+    return paddedBuffer;
   }
 
   /**

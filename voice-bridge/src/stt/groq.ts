@@ -21,15 +21,19 @@ export class GroqSTT extends EventEmitter {
   private language: string;
   private model: string;
   private logger?: Logger;
-  private audioBuffer: Buffer[] = [];
+  public audioBuffer: Buffer[] = [];
+  public totalBytes = 0;
   private isConnected = false;
   private silenceTimeout: NodeJS.Timeout | null = null;
   private readonly SILENCE_THRESHOLD_MS = 1500; // Send after 1.5s of silence
+  private readonly MAX_BUFFER_BYTES = 160000; // ~5 seconds at 16kHz 16-bit mono
 
   constructor(options: GroqSTTOptions) {
     super();
     this.apiKey = options.apiKey;
-    this.language = options.language || 'en';
+    // Groq Whisper only accepts 2-letter language codes (e.g., 'en', not 'en-US')
+    const lang = options.language || 'en';
+    this.language = lang.split('-')[0]; // Convert 'en-US' to 'en'
     this.model = options.model || 'whisper-large-v3-turbo';
     this.logger = options.logger;
   }
@@ -45,7 +49,7 @@ export class GroqSTT extends EventEmitter {
 
   /**
    * Send audio data for transcription.
-   * Buffers audio and sends when silence is detected.
+   * Buffers audio and sends when silence is detected or buffer is full.
    */
   send(audioData: Buffer): void {
     if (!this.isConnected) {
@@ -55,6 +59,23 @@ export class GroqSTT extends EventEmitter {
 
     // Add to buffer
     this.audioBuffer.push(audioData);
+    this.totalBytes += audioData.length;
+
+    // Log periodically
+    if (this.audioBuffer.length % 10 === 1) {
+      this.logger?.debug({ chunks: this.audioBuffer.length, totalBytes: this.totalBytes }, 'Audio received by Groq STT');
+    }
+
+    // If buffer is full, transcribe immediately
+    if (this.totalBytes >= this.MAX_BUFFER_BYTES) {
+      this.logger?.debug({ totalBytes: this.totalBytes }, 'Buffer full, transcribing...');
+      if (this.silenceTimeout) {
+        clearTimeout(this.silenceTimeout);
+        this.silenceTimeout = null;
+      }
+      this.transcribeBuffer();
+      return;
+    }
 
     // Reset silence timer
     if (this.silenceTimeout) {
@@ -76,6 +97,9 @@ export class GroqSTT extends EventEmitter {
     // Combine all buffers
     const audioData = Buffer.concat(this.audioBuffer);
     this.audioBuffer = [];
+    this.totalBytes = 0;
+
+    this.logger?.info({ bytes: audioData.length }, 'Starting Groq transcription');
 
     // Skip if too short (less than 0.5 seconds at 16kHz 16-bit)
     if (audioData.length < 16000) {
@@ -125,8 +149,12 @@ export class GroqSTT extends EventEmitter {
         this.emit('transcript', result);
         this.emit('final_transcript', result);
       }
-    } catch (error) {
-      this.logger?.error({ error }, 'Groq transcription error');
+    } catch (error: any) {
+      this.logger?.error({
+        error: error?.message || String(error),
+        stack: error?.stack,
+        name: error?.name
+      }, 'Groq transcription error');
       this.emit('error', error);
     }
   }

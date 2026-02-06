@@ -2,13 +2,23 @@
  * Twilio Media Stream handler for real-time bidirectional audio.
  *
  * Handles WebSocket connection from Twilio for streaming audio.
+ * Supports both 'ws' library and Fastify WebSocket.
  */
 
-import { WebSocket } from 'ws';
 import { EventEmitter } from 'events';
 import { Logger } from 'pino';
 import type { TwilioMediaMessage, TwilioOutboundMessage } from '../types.js';
 import { convertFromTwilioAudio, TWILIO_BYTES_PER_FRAME } from '../audio.js';
+
+// Generic WebSocket interface that works with both ws and Fastify
+interface GenericWebSocket {
+  send(data: string | Buffer): void;
+  close?(): void;
+  terminate?(): void;
+  readyState?: number;
+  on?(event: string, handler: (...args: any[]) => void): void;
+  addEventListener?(event: string, handler: (event: any) => void): void;
+}
 
 export interface MediaStreamOptions {
   logger?: Logger;
@@ -18,7 +28,7 @@ export interface MediaStreamOptions {
 }
 
 export class MediaStreamHandler extends EventEmitter {
-  private ws: WebSocket;
+  private ws: GenericWebSocket;
   private logger?: Logger;
   private streamSid: string | null = null;
   private callSid: string | null = null;
@@ -27,7 +37,7 @@ export class MediaStreamHandler extends EventEmitter {
   private pendingMarks: Map<string, () => void> = new Map();
   private isSpeaking = false;
 
-  constructor(ws: WebSocket, options: MediaStreamOptions = {}) {
+  constructor(ws: GenericWebSocket, options: MediaStreamOptions = {}) {
     super();
     this.ws = ws;
     this.logger = options.logger;
@@ -47,26 +57,53 @@ export class MediaStreamHandler extends EventEmitter {
 
   /**
    * Set up WebSocket message handlers.
+   * Supports both 'ws' library (on) and browser/Fastify WebSocket (addEventListener).
    */
   private setupHandlers(): void {
-    this.ws.on('message', (data: Buffer) => {
+    const messageHandler = (data: any) => {
       try {
-        const message: TwilioMediaMessage = JSON.parse(data.toString());
+        // Handle different data formats
+        let strData: string;
+        if (typeof data === 'string') {
+          strData = data;
+        } else if (data instanceof Buffer) {
+          strData = data.toString();
+        } else if (data?.data) {
+          // Browser-style MessageEvent
+          strData = typeof data.data === 'string' ? data.data : data.data.toString();
+        } else {
+          strData = String(data);
+        }
+
+        const message: TwilioMediaMessage = JSON.parse(strData);
         this.handleMessage(message);
       } catch (error) {
         this.logger?.error({ error }, 'Failed to parse media stream message');
       }
-    });
+    };
 
-    this.ws.on('close', () => {
+    const closeHandler = () => {
       this.logger?.info({ callSid: this.callSid }, 'Media stream closed');
       this.emit('disconnected', this.callSid);
-    });
+    };
 
-    this.ws.on('error', (error) => {
-      this.logger?.error({ error }, 'Media stream error');
+    const errorHandler = (error: any) => {
+      this.logger?.error({ error }, 'Media stream WebSocket error');
       this.emit('error', error);
-    });
+    };
+
+    // Try ws-style .on() first, then browser-style addEventListener
+    if (typeof this.ws.on === 'function') {
+      this.ws.on('message', messageHandler);
+      this.ws.on('close', closeHandler);
+      this.ws.on('error', errorHandler);
+    } else if (typeof this.ws.addEventListener === 'function') {
+      this.ws.addEventListener('message', messageHandler);
+      this.ws.addEventListener('close', closeHandler);
+      this.ws.addEventListener('error', errorHandler);
+    } else {
+      this.logger?.error('WebSocket does not support on() or addEventListener()');
+    }
   }
 
   /**
@@ -131,6 +168,11 @@ export class MediaStreamHandler extends EventEmitter {
     const audioData = Buffer.from(message.media.payload, 'base64');
     this.audioBuffer.push(audioData);
 
+    // Log every 50 frames (~1 second of audio)
+    if (this.audioBuffer.length % 50 === 0) {
+      this.logger?.debug({ frames: this.audioBuffer.length }, 'Receiving audio frames');
+    }
+
     // Emit audio in batches (e.g., every 200ms = 10 frames)
     if (this.audioBuffer.length >= 10) {
       this.flushAudioBuffer();
@@ -145,6 +187,7 @@ export class MediaStreamHandler extends EventEmitter {
 
     // Convert mu-law to PCM at 16kHz for STT
     const pcmAudio = convertFromTwilioAudio(this.audioBuffer, 16000);
+    this.logger?.debug({ inputFrames: this.audioBuffer.length, outputBytes: pcmAudio.length }, 'Flushing audio to STT');
     this.audioBuffer = [];
 
     this.emit('audio', pcmAudio);
@@ -282,7 +325,8 @@ export class MediaStreamHandler extends EventEmitter {
    * Check if connected.
    */
   get connected(): boolean {
-    return this.streamSid !== null && this.ws.readyState === WebSocket.OPEN;
+    // WebSocket.OPEN = 1
+    return this.streamSid !== null && this.ws.readyState === 1;
   }
 
   /**
@@ -290,7 +334,11 @@ export class MediaStreamHandler extends EventEmitter {
    */
   close(): void {
     this.flushAudioBuffer();
-    this.ws.close();
+    if (typeof this.ws.close === 'function') {
+      this.ws.close();
+    } else if (typeof this.ws.terminate === 'function') {
+      this.ws.terminate();
+    }
   }
 }
 

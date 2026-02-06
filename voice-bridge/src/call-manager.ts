@@ -7,8 +7,8 @@
 
 import { EventEmitter } from 'events';
 import { Logger } from 'pino';
-import { WebSocket } from 'ws';
-import type { CallRecord, CallState, CallEvent, TranscriptEntry, STTResult } from './types.js';
+// Use any for WebSocket to support both ws library and Fastify WebSocket
+import type { CallRecord, CallState, CallEvent, TranscriptEntry, STTResult, ConversationState } from './types.js';
 import { TwilioProvider, MediaStreamHandler, createMediaStreamHandler, TwiMLBuilder, gatherSpeechTwiML } from './twilio/index.js';
 import { createSTT, type STTProvider } from './stt/index.js';
 import { createTTS, type TTSProvider } from './tts/index.js';
@@ -136,7 +136,7 @@ export class CallManager extends EventEmitter {
   /**
    * Handle new WebSocket connection for Media Stream.
    */
-  async handleMediaStream(ws: WebSocket): Promise<void> {
+  async handleMediaStream(ws: any): Promise<void> {
     const stream = createMediaStreamHandler(ws, {
       logger: this.logger,
     });
@@ -150,6 +150,7 @@ export class CallManager extends EventEmitter {
         call.streamSid = streamSid;
         call.state = 'in-progress';
         call.answeredAt = new Date();
+        call.conversationState = 'idle';
 
         // Set up STT for this call
         await this.setupSTT(callSid, stream);
@@ -157,8 +158,12 @@ export class CallManager extends EventEmitter {
         // Speak greeting if set
         const greeting = call.metadata._greeting as string;
         if (greeting) {
+          // speak() will set state to 'speaking', then 'listening' after completion
           await this.speak(callSid, greeting);
           delete call.metadata._greeting;
+        } else {
+          // No greeting, start listening immediately
+          this.setConversationState(callSid, 'listening');
         }
 
         this.emitEvent({
@@ -180,7 +185,26 @@ export class CallManager extends EventEmitter {
   }
 
   /**
-   * Set up STT for a call.
+   * Set conversation state for a call.
+   */
+  private setConversationState(callSid: string, state: ConversationState): void {
+    const call = this.calls.get(callSid);
+    if (call) {
+      const prevState = call.conversationState;
+      call.conversationState = state;
+      this.logger?.info({ callSid, prevState, newState: state }, 'Conversation state changed');
+    }
+  }
+
+  /**
+   * Get conversation state for a call.
+   */
+  private getConversationState(callSid: string): ConversationState {
+    return this.calls.get(callSid)?.conversationState || 'idle';
+  }
+
+  /**
+   * Set up STT for a call with proper state management.
    */
   private async setupSTT(callSid: string, stream: MediaStreamHandler): Promise<void> {
     const stt = createSTT({
@@ -195,35 +219,57 @@ export class CallManager extends EventEmitter {
     await stt.connect();
     this.sttInstances.set(callSid, stt);
 
-    // Forward audio from stream to STT
+    // Helper to clear STT buffer
+    const clearSTTBuffer = () => {
+      const groqStt = stt as any;
+      if (groqStt.audioBuffer) {
+        groqStt.audioBuffer = [];
+        groqStt.totalBytes = 0;
+        if (groqStt.silenceTimeout) {
+          clearTimeout(groqStt.silenceTimeout);
+          groqStt.silenceTimeout = null;
+        }
+      }
+    };
+
+    // When speaking finishes, transition to listening state
+    stream.on('speaking_finished', () => {
+      this.logger?.info({ callSid }, 'Speaking finished, transitioning to listening');
+      clearSTTBuffer(); // Clear any accumulated audio during speech
+      this.setConversationState(callSid, 'listening');
+    });
+
+    // Forward audio from stream to STT (only in listening state)
     stream.on('audio', (audio: Buffer) => {
+      const state = this.getConversationState(callSid);
+
+      // Only process audio when in listening state
+      if (state !== 'listening') {
+        // Clear buffer if we're speaking or processing
+        if (state === 'speaking' || state === 'processing') {
+          clearSTTBuffer();
+        }
+        return;
+      }
+
       stt.send(audio);
     });
 
     // Handle transcription results
     stt.on('final_transcript', (result: STTResult) => {
-      this.handleTranscript(callSid, result);
-    });
+      const state = this.getConversationState(callSid);
 
-    stt.on('speech_started', () => {
-      this.emitEvent({
-        callSid,
-        eventType: 'speech_started',
-        timestamp: new Date(),
-        data: {},
-      });
-
-      // Barge-in: clear any playing audio
-      const activeStream = this.streams.get(callSid);
-      if (activeStream?.speaking) {
-        activeStream.clearAudio();
-        this.emitEvent({
-          callSid,
-          eventType: 'speech_ended',
-          timestamp: new Date(),
-          data: { interrupted: true },
-        });
+      // Only accept transcriptions in listening state
+      if (state !== 'listening') {
+        this.logger?.debug({ callSid, state, text: result.text }, 'Ignoring transcript - not in listening state');
+        return;
       }
+
+      // Transition to processing state
+      this.setConversationState(callSid, 'processing');
+      clearSTTBuffer(); // Clear buffer while processing
+
+      this.handleTranscript(callSid, result);
     });
 
     stt.on('error', (error) => {
@@ -233,6 +279,7 @@ export class CallManager extends EventEmitter {
 
   /**
    * Handle transcription result.
+   * Only emits event - the server handles forwarding to agent.
    */
   private handleTranscript(callSid: string, result: STTResult): void {
     const call = this.calls.get(callSid);
@@ -249,7 +296,7 @@ export class CallManager extends EventEmitter {
     };
     call.transcript.push(entry);
 
-    // Emit transcription event
+    // Emit transcription event - server will handle forwarding to agent
     this.emitEvent({
       callSid,
       eventType: 'transcription',
@@ -261,8 +308,8 @@ export class CallManager extends EventEmitter {
       },
     });
 
-    // Send to Flowly agent and speak the response
-    this.sendToFlowlyAndRespond(callSid, result.text, call.from);
+    // NOTE: Do NOT call sendToFlowlyAndRespond here!
+    // The server's transcript handler will receive this event and handle the response.
   }
 
   /**
@@ -316,6 +363,9 @@ export class CallManager extends EventEmitter {
       throw new Error(`Call ${callSid} not found`);
     }
 
+    // Set speaking state BEFORE starting to speak
+    this.setConversationState(callSid, 'speaking');
+
     this.logger?.info({ callSid, text: text.substring(0, 50) }, 'Speaking');
 
     // Add to transcript
@@ -327,16 +377,22 @@ export class CallManager extends EventEmitter {
 
     if (stream?.connected) {
       // Use Media Streams for real-time audio
+      this.logger?.info({ callSid }, 'Synthesizing TTS audio...');
       const pcmBuffer = await this.tts.synthesize(text);
+      this.logger?.info({ callSid, pcmBytes: pcmBuffer.length }, 'TTS audio synthesized');
 
       // Convert to mu-law frames
       const frames: Buffer[] = [];
       for (const frame of convertToTwilioAudio(pcmBuffer, 24000)) {
         frames.push(frame);
       }
+      this.logger?.info({ callSid, frameCount: frames.length }, 'Sending audio frames to Twilio');
 
       // Send audio and wait for completion
       await stream.sendAudioFrames(frames);
+      this.logger?.info({ callSid }, 'Audio playback completed');
+
+      // Note: speaking_finished event from stream will transition to listening state
 
       this.emitEvent({
         callSid,
@@ -351,6 +407,8 @@ export class CallManager extends EventEmitter {
         .build();
 
       await this.provider.updateCall({ callSid, twiml });
+      // Transition to listening since we can't track TwiML completion
+      this.setConversationState(callSid, 'listening');
     }
   }
 
@@ -603,7 +661,7 @@ export class CallManager extends EventEmitter {
 
     return new TwiMLBuilder()
       .connect()
-      .stream({ url: wsUrl, track: 'both_tracks' })
+      .stream({ url: wsUrl, track: 'inbound_track' })
       .endConnect()
       .build();
   }
