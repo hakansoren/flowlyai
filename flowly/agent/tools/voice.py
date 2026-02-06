@@ -1,29 +1,39 @@
-"""Voice call tool for making and managing phone calls via voice-bridge."""
+"""Voice call tool for making and managing phone calls.
 
-from typing import Any
+This tool integrates with the voice plugin for direct agent control.
+"""
 
-import httpx
+from typing import Any, TYPE_CHECKING
+
 from loguru import logger
 
 from flowly.agent.tools.base import Tool
 
+if TYPE_CHECKING:
+    from flowly.voice.plugin import VoicePlugin
+
 
 class VoiceCallTool(Tool):
     """
-    Tool to make and manage voice calls via the voice-bridge service.
+    Tool to make and manage voice calls via the integrated voice plugin.
 
-    The voice-bridge handles Twilio, STT (Deepgram/OpenAI), and TTS (OpenAI).
-    This tool provides an interface for the agent to control calls.
+    The voice plugin handles Twilio, STT, and TTS directly, giving
+    the agent full tool access during voice conversations.
     """
 
-    def __init__(self, bridge_url: str = "http://localhost:8765"):
+    def __init__(self, voice_plugin: "VoicePlugin | None" = None):
         """
         Initialize the voice call tool.
 
         Args:
-            bridge_url: URL of the voice-bridge API.
+            voice_plugin: Optional voice plugin instance. If not provided,
+                          the tool will be disabled.
         """
-        self.bridge_url = bridge_url.rstrip("/")
+        self._voice_plugin = voice_plugin
+
+    def set_voice_plugin(self, voice_plugin: "VoicePlugin"):
+        """Set the voice plugin instance."""
+        self._voice_plugin = voice_plugin
 
     @property
     def name(self) -> str:
@@ -34,26 +44,23 @@ class VoiceCallTool(Tool):
         return """Make and manage voice phone calls.
 
 Actions:
-- call: Make a call and start a conversation
+- call: Make a call to a phone number
 - speak: Speak a message on an active call
 - end_call: End a call (optionally with goodbye message)
-- get_call: Get call status and transcript
 - list_calls: List all active calls
 
 Phone numbers should be in E.164 format (e.g., +1234567890).
 
-When you make a call with action="call", the system will:
-1. Call the phone number
-2. Speak your greeting message
-3. Listen for the user's response
-4. Send the transcribed speech back to you automatically
-
-Your responses to voice messages will be automatically spoken to the caller.
+When you make a call:
+1. The system calls the phone number
+2. Listens for the user's speech
+3. Transcribes it and sends to you
+4. Your response is automatically spoken back
 
 Examples:
-- Make a call: voice_call(action="call", to="+1234567890", greeting="Hello, how can I help?")
-- End call: voice_call(action="end_call", call_sid="CA...", message="Goodbye!")
-- Get status: voice_call(action="get_call", call_sid="CA...")"""
+- Make a call: voice_call(action="call", to="+1234567890", greeting="Merhaba, nasıl yardımcı olabilirim?")
+- End call: voice_call(action="end_call", call_sid="CA...", message="Görüşürüz!")
+- List calls: voice_call(action="list_calls")"""
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -63,7 +70,7 @@ Examples:
                 "action": {
                     "type": "string",
                     "description": "The action to perform",
-                    "enum": ["call", "speak", "end_call", "get_call", "list_calls"],
+                    "enum": ["call", "speak", "end_call", "list_calls"],
                 },
                 "to": {
                     "type": "string",
@@ -79,7 +86,7 @@ Examples:
                 },
                 "call_sid": {
                     "type": "string",
-                    "description": "Call SID (for speak, end_call, get_call)",
+                    "description": "Call SID (for speak, end_call)",
                 },
             },
             "required": ["action"],
@@ -87,11 +94,14 @@ Examples:
 
     async def execute(self, action: str, **kwargs: Any) -> str:
         """Execute a voice call action."""
+        if not self._voice_plugin:
+            return "Error: Voice plugin is not enabled. Configure it in ~/.flowly/config.json under integrations.voice"
+
         try:
             if action == "call":
                 return await self._make_call(
                     to=kwargs.get("to", ""),
-                    greeting=kwargs.get("greeting", "Hello!"),
+                    greeting=kwargs.get("greeting"),
                 )
             elif action == "speak":
                 return await self._speak(
@@ -103,44 +113,29 @@ Examples:
                     call_sid=kwargs.get("call_sid", ""),
                     message=kwargs.get("message"),
                 )
-            elif action == "get_call":
-                return await self._get_call(kwargs.get("call_sid", ""))
             elif action == "list_calls":
                 return await self._list_calls()
             else:
                 return f"Unknown action: {action}"
 
-        except httpx.ConnectError:
-            return "Error: Voice bridge is not running. Start it with: cd voice-bridge && npm start"
         except Exception as e:
             logger.error(f"Voice call error: {e}")
             return f"Error: {str(e)}"
 
-    async def _make_call(self, to: str, greeting: str) -> str:
-        """Make a conversation call."""
+    async def _make_call(self, to: str, greeting: str | None = None) -> str:
+        """Make a call."""
         if not to:
             return "Error: 'to' phone number is required"
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{self.bridge_url}/api/call",
-                json={
-                    "to": to,
-                    "greeting": greeting,
-                    "conversation": True,
-                },
-                timeout=30,
-            )
-            response.raise_for_status()
-            data = response.json()
+        call_sid = await self._voice_plugin.make_call(to_number=to)
 
-        call_sid = data.get("callSid", "unknown")
+        if greeting:
+            await self._voice_plugin.call_manager.speak(call_sid, greeting)
 
         return f"""📞 Call initiated!
 
 Call SID: {call_sid}
 To: {to}
-Greeting: "{greeting}"
 
 The call is being placed. When the user answers and speaks, their words will appear in the conversation.
 Your responses will be automatically spoken to them."""
@@ -152,13 +147,11 @@ Your responses will be automatically spoken to them."""
         if not message:
             return "Error: 'message' is required"
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{self.bridge_url}/api/speak",
-                json={"callSid": call_sid, "message": message},
-                timeout=30,
-            )
-            response.raise_for_status()
+        call = self._voice_plugin.call_manager.get_call(call_sid)
+        if not call:
+            return f"Error: Call not found: {call_sid}"
+
+        await self._voice_plugin.call_manager.speak(call_sid, message)
 
         return f"🗣️ Speaking on call {call_sid}: \"{message}\""
 
@@ -167,76 +160,24 @@ Your responses will be automatically spoken to them."""
         if not call_sid:
             return "Error: 'call_sid' is required"
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{self.bridge_url}/api/end",
-                json={"callSid": call_sid, "message": message},
-                timeout=30,
-            )
-            response.raise_for_status()
+        await self._voice_plugin.end_call(call_sid, message)
 
         if message:
             return f"📞 Call ended with message: \"{message}\""
         return f"📞 Call {call_sid} ended."
 
-    async def _get_call(self, call_sid: str) -> str:
-        """Get call details."""
-        if not call_sid:
-            return "Error: 'call_sid' is required"
-
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.bridge_url}/api/call/{call_sid}",
-                timeout=30,
-            )
-
-            if response.status_code == 404:
-                return f"Call not found: {call_sid}"
-
-            response.raise_for_status()
-            call = response.json()
-
-        # Format transcript
-        transcript_lines = []
-        for entry in call.get("transcript", []):
-            role = "🤖 Assistant" if entry["role"] == "assistant" else "👤 User"
-            transcript_lines.append(f"  {role}: {entry['text']}")
-
-        transcript = "\n".join(transcript_lines) if transcript_lines else "  (no transcript)"
-
-        state = call.get("state", "unknown")
-        duration = call.get("durationSeconds")
-        duration_str = f"{duration}s" if duration else "ongoing"
-
-        return f"""📞 Call Status: {call_sid}
-
-State: {state}
-From: {call.get("from", "unknown")}
-To: {call.get("to", "unknown")}
-Duration: {duration_str}
-
-📝 Transcript:
-{transcript}"""
-
     async def _list_calls(self) -> str:
         """List active calls."""
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.bridge_url}/api/calls",
-                timeout=30,
-            )
-            response.raise_for_status()
-            data = response.json()
-
-        calls = data.get("calls", [])
+        calls = self._voice_plugin.call_manager.list_active_calls()
 
         if not calls:
             return "📞 No active calls."
 
         lines = ["📞 Active Calls:\n"]
         for call in calls:
-            lines.append(f"• {call['callSid']}")
-            lines.append(f"  To: {call['to']} | State: {call['state']}")
+            lines.append(f"• {call.call_sid}")
+            lines.append(f"  From: {call.from_number} → To: {call.to_number}")
+            lines.append(f"  Status: {call.status} | Duration: {call.duration_seconds:.0f}s")
             lines.append("")
 
         return "\n".join(lines)

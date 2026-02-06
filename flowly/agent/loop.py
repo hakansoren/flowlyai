@@ -147,9 +147,23 @@ class AgentLoop:
         self.tools.register(SystemTool())
 
         # Voice call tool (if configured)
+        # Note: The voice plugin is set later via set_voice_plugin() after the plugin is created
         if self.voice_config and self.voice_config.enabled:
-            self.tools.register(VoiceCallTool(bridge_url=self.voice_config.bridge_url))
-    
+            self._voice_tool = VoiceCallTool()
+            self.tools.register(self._voice_tool)
+        else:
+            self._voice_tool = None
+
+    def set_voice_plugin(self, voice_plugin) -> None:
+        """Set the voice plugin for voice call tool integration.
+
+        This must be called after the VoicePlugin is created to enable
+        integrated voice call handling with full tool access.
+        """
+        if self._voice_tool:
+            self._voice_tool.set_voice_plugin(voice_plugin)
+            logger.info("Voice plugin connected to agent")
+
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
         self._running = True

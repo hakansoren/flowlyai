@@ -403,8 +403,21 @@ Kullanıcı şunu söyledi: "{text}"
 
     console.print(f"[green]✓[/green] Heartbeat: every 30m")
 
+    # Initialize voice plugin if enabled
+    voice_plugin = None
     if config.integrations.voice.enabled:
-        console.print(f"[green]✓[/green] Voice calls: enabled (bridge: {config.integrations.voice.bridge_url})")
+        voice_cfg = config.integrations.voice
+        if voice_cfg.twilio_account_sid and voice_cfg.twilio_auth_token:
+            try:
+                from flowly.voice.plugin import VoicePlugin
+                voice_plugin = VoicePlugin(config, agent)
+                # Connect voice plugin to agent's voice tool
+                agent.set_voice_plugin(voice_plugin)
+                console.print(f"[green]✓[/green] Voice calls: integrated (webhook port: 8765)")
+            except Exception as e:
+                console.print(f"[yellow]Warning: Voice plugin failed to initialize: {e}[/yellow]")
+        else:
+            console.print(f"[yellow]Warning: Voice enabled but Twilio credentials not configured[/yellow]")
 
     console.print(f"[green]✓[/green] API: http://{config.gateway.host}:{port}")
 
@@ -413,12 +426,19 @@ Kullanıcı şunu söyledi: "{text}"
             await gateway_server.start()
             await cron.start()
             await heartbeat.start()
+
+            # Start voice plugin if available
+            if voice_plugin:
+                await voice_plugin.start(host="0.0.0.0", port=8765)
+
             await asyncio.gather(
                 agent.run(),
                 channels.start_all(),
             )
         except KeyboardInterrupt:
             console.print("\nShutting down...")
+            if voice_plugin:
+                await voice_plugin.stop()
             await gateway_server.stop()
             heartbeat.stop()
             cron.stop()
