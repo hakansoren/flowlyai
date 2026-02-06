@@ -15,6 +15,10 @@ import { createTTS, type TTSProvider } from './tts/index.js';
 import { convertToTwilioAudio } from './audio.js';
 import type { Config } from './config.js';
 
+// Pending response handler for agent responses
+type ResponseHandler = (text: string) => void;
+const pendingResponses: Map<string, ResponseHandler> = new Map();
+
 export interface CallManagerOptions {
   config: Config;
   logger?: Logger;
@@ -254,6 +258,49 @@ export class CallManager extends EventEmitter {
         role: 'user',
       },
     });
+
+    // Send to Flowly agent and speak the response
+    this.sendToFlowlyAndRespond(callSid, result.text, call.from);
+  }
+
+  /**
+   * Send transcription to Flowly agent and speak the response.
+   */
+  private async sendToFlowlyAndRespond(
+    callSid: string,
+    text: string,
+    from: string
+  ): Promise<void> {
+    try {
+      const gatewayUrl = this.config.flowly.gatewayUrl;
+
+      this.logger?.info({ callSid, text, gatewayUrl }, 'Sending to Flowly agent');
+
+      const response = await fetch(`${gatewayUrl}/api/voice/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          call_sid: callSid,
+          from: from,
+          text: text,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Flowly returned ${response.status}`);
+      }
+
+      const data = await response.json() as { response?: string };
+
+      if (data.response) {
+        this.logger?.info({ callSid, response: data.response.substring(0, 50) }, 'Got agent response');
+        await this.speak(callSid, data.response);
+      }
+    } catch (error) {
+      this.logger?.error({ error, callSid }, 'Failed to send to Flowly');
+      // Speak error message
+      await this.speak(callSid, "I'm sorry, I couldn't process that. Please try again.");
+    }
   }
 
   /**

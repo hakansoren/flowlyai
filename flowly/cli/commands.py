@@ -217,6 +217,7 @@ def gateway(
     from flowly.cron.service import CronService
     from flowly.cron.types import CronJob
     from flowly.heartbeat.service import HeartbeatService
+    from flowly.gateway.server import GatewayServer
 
     if verbose:
         import logging
@@ -343,6 +344,20 @@ def gateway(
 
     channels.set_compact_callback(on_compact)
 
+    # Create gateway API server for voice bridge
+    async def on_voice_message(call_sid: str, from_number: str, text: str) -> str:
+        """Handle voice message from voice bridge."""
+        # Format message with context
+        prompt = f"[Voice Call from {from_number}]\n{text}"
+        response = await agent.process_direct(prompt, session_key=f"voice:{call_sid}")
+        return response or "I'm sorry, I couldn't process that."
+
+    gateway_server = GatewayServer(
+        host=config.gateway.host,
+        port=port,
+        on_voice_message=on_voice_message,
+    )
+
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
     else:
@@ -354,8 +369,14 @@ def gateway(
 
     console.print(f"[green]✓[/green] Heartbeat: every 30m")
 
+    if config.integrations.voice.enabled:
+        console.print(f"[green]✓[/green] Voice calls: enabled (bridge: {config.integrations.voice.bridge_url})")
+
+    console.print(f"[green]✓[/green] API: http://{config.gateway.host}:{port}")
+
     async def run():
         try:
+            await gateway_server.start()
             await cron.start()
             await heartbeat.start()
             await asyncio.gather(
@@ -364,6 +385,7 @@ def gateway(
             )
         except KeyboardInterrupt:
             console.print("\nShutting down...")
+            await gateway_server.stop()
             heartbeat.stop()
             cron.stop()
             agent.stop()
