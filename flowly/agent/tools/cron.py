@@ -2,7 +2,7 @@
 
 import time
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from loguru import logger
 
@@ -174,7 +174,8 @@ class CronTool(Tool):
             "Manage scheduled tasks and reminders. "
             "Use 'list' to see jobs, 'add' to create new ones, 'remove' to delete. "
             "Schedules: 'every 30m', 'every 1d', 'at 14:30', 'at tomorrow 09:00', "
-            "or cron expressions like '0 9 * * *'."
+            "or cron expressions like '0 9 * * *'. "
+            "For deterministic scheduled actions, use tool_name + tool_args."
         )
 
     @property
@@ -218,6 +219,14 @@ class CronTool(Tool):
                 "to": {
                     "type": "string",
                     "description": "Chat ID to deliver to"
+                },
+                "tool_name": {
+                    "type": "string",
+                    "description": "Optional tool to execute directly when job runs (e.g., 'voice_call')"
+                },
+                "tool_args": {
+                    "type": "object",
+                    "description": "Arguments for tool_name when using direct tool execution"
                 }
             },
             "required": ["action"]
@@ -233,6 +242,8 @@ class CronTool(Tool):
         deliver: bool = False,
         channel: str | None = None,
         to: str | None = None,
+        tool_name: str | None = None,
+        tool_args: dict[str, Any] | None = None,
         **kwargs: Any
     ) -> str:
         """Execute cron action."""
@@ -244,7 +255,16 @@ class CronTool(Tool):
                 return self._list_jobs()
 
             elif action == "add":
-                return await self._add_job(name, message, schedule, deliver, channel, to)
+                return await self._add_job(
+                    name=name,
+                    message=message,
+                    schedule=schedule,
+                    deliver=deliver,
+                    channel=channel,
+                    to=to,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                )
 
             elif action == "remove":
                 return self._remove_job(job_id)
@@ -297,6 +317,7 @@ class CronTool(Tool):
                 sched = "unknown"
 
             lines.append(f"[{status}] {job.id}: {job.name}")
+            lines.append(f"    Kind: {job.payload.kind}")
             lines.append(f"    Schedule: {sched}")
             lines.append(f"    Next run: {next_run}")
             lines.append(f"    Message: {job.payload.message[:50]}...")
@@ -311,15 +332,32 @@ class CronTool(Tool):
         schedule: str | None,
         deliver: bool,
         channel: str | None,
-        to: str | None
+        to: str | None,
+        tool_name: str | None,
+        tool_args: dict[str, Any] | None,
     ) -> str:
         """Add a new scheduled job."""
         if not name:
             return "Error: 'name' is required for adding a job"
-        if not message:
-            return "Error: 'message' is required for adding a job"
         if not schedule:
             return "Error: 'schedule' is required for adding a job"
+
+        payload_kind: Literal["agent_turn", "tool_call"] = "agent_turn"
+        if tool_name:
+            payload_kind = "tool_call"
+            message = message or f"Run tool '{tool_name}'"
+            if tool_args is None or not isinstance(tool_args, dict) or not tool_args:
+                return "Error: 'tool_args' must be a non-empty object when 'tool_name' is set"
+
+            if tool_name == "voice_call":
+                action_value = str(tool_args.get("action", "")).lower()
+                to_value = str(tool_args.get("to", "")).strip()
+                if action_value != "call":
+                    return "Error: voice_call scheduled jobs must set tool_args.action='call'"
+                if not to_value:
+                    return "Error: voice_call scheduled jobs must set tool_args.to (E.164 phone number)"
+        elif not message:
+            return "Error: 'message' is required for adding a job"
 
         # Parse schedule
         schedule_obj = self._parse_schedule(schedule)
@@ -346,12 +384,16 @@ class CronTool(Tool):
             channel=channel,
             to=to,
             delete_after_run=(schedule_obj.kind == "at"),
+            payload_kind=payload_kind,
+            tool_name=tool_name,
+            tool_args=tool_args,
         )
 
         next_run = _format_next_run(job.state.next_run_at_ms)
 
         return (
             f"Created job '{job.name}' (ID: {job.id})\n"
+            f"Kind: {job.payload.kind}\n"
             f"Schedule: {schedule}\n"
             f"Next run: {next_run}\n"
             f"Message: {message}"

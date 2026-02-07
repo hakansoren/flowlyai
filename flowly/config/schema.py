@@ -54,9 +54,12 @@ class ChannelsConfig(BaseModel):
 class AgentDefaults(BaseModel):
     """Default agent configuration."""
     workspace: str = "~/.flowly/workspace"
-    model: str = "anthropic/claude-opus-4-5"
+    model: str = "moonshotai/kimi-k2.5"
+    action_model: str | None = "moonshotai/kimi-k2.5"
     max_tokens: int = 8192
     temperature: float = 0.7
+    action_temperature: float = 0.1
+    action_tool_retries: int = 2
     max_tool_iterations: int = 20
     context_messages: int = 100  # Max messages to include in context
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
@@ -104,6 +107,8 @@ class WebToolsConfig(BaseModel):
 class ExecToolConfig(BaseModel):
     """Command execution tool configuration."""
     enabled: bool = False  # Disabled by default for security
+    security: Literal["deny", "allowlist", "full"] = "deny"  # Security mode
+    ask: Literal["off", "on-miss", "always"] = "on-miss"  # Approval mode
     timeout_seconds: int = 300  # 5 minutes default
     max_output_chars: int = 200000  # 200KB
     approval_timeout_seconds: int = 120  # 2 minutes to approve
@@ -130,6 +135,7 @@ class VoiceBridgeConfig(BaseModel):
 
     # Link voice calls to Telegram session (for screenshots, messages etc.)
     telegram_chat_id: str = ""  # Your Telegram chat ID - voice calls will use this session
+    default_to_number: str = ""  # Optional default target phone for "beni ara" requests
 
     # STT/TTS settings
     stt_provider: str = "groq"  # groq, deepgram, openai, or elevenlabs

@@ -65,6 +65,7 @@ class LiteLLMProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        tool_choice: str = "auto",
     ) -> LLMResponse:
         """
         Send a chat completion request via LiteLLM.
@@ -123,12 +124,31 @@ class LiteLLMProvider(LLMProvider):
         
         if tools:
             kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
+            # Use provided tool_choice (required/auto/none)
+            # "required" forces model to call a tool - prevents hallucination
+            # "auto" lets model decide - use after tools have been executed
+            kwargs["tool_choice"] = tool_choice
         
         try:
+            # Debug: Log what we're sending
+            import json as json_module
+            print(f"[LLM] Model: {model}, tool_choice: {tool_choice if tools else 'N/A'}, tools: {len(tools) if tools else 0}")
+
             response = await acompletion(**kwargs)
+
+            # Debug: Log raw response
+            choice = response.choices[0]
+            msg = choice.message
+            print(f"[LLM] Response: finish_reason={choice.finish_reason}, has_content={bool(msg.content)}, has_tool_calls={bool(getattr(msg, 'tool_calls', None))}")
+            if getattr(msg, 'tool_calls', None):
+                for tc in msg.tool_calls:
+                    print(f"[LLM]   Tool call: {tc.function.name}({tc.function.arguments[:100]}...)")
+
             return self._parse_response(response)
         except Exception as e:
+            import traceback
+            print(f"[LLM ERROR] {e}")
+            traceback.print_exc()
             # Return error as content for graceful handling
             return LLMResponse(
                 content=f"Error calling LLM: {str(e)}",

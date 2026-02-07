@@ -3,6 +3,7 @@
 import asyncio
 import platform
 import shutil
+import signal
 from pathlib import Path
 
 import typer
@@ -236,7 +237,9 @@ def gateway(
         import logging
         logging.basicConfig(level=logging.DEBUG)
 
-    console.print(f"{__logo__} Starting flowly gateway on port {port}...")
+    from flowly import __banner__
+    console.print(f"[cyan]{__banner__.format(version=__version__)}[/cyan]")
+    console.print(f"Starting gateway on port {port}...")
 
     config = load_config()
 
@@ -283,6 +286,8 @@ def gateway(
     exec_cfg = config.tools.exec
     exec_config = ExecConfig(
         enabled=exec_cfg.enabled,
+        security=exec_cfg.security,
+        ask=exec_cfg.ask,
         timeout_seconds=exec_cfg.timeout_seconds,
         max_output_chars=exec_cfg.max_output_chars,
         approval_timeout_seconds=exec_cfg.approval_timeout_seconds,
@@ -294,6 +299,9 @@ def gateway(
         provider=provider,
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
+        action_model=config.agents.defaults.action_model,
+        action_temperature=config.agents.defaults.action_temperature,
+        action_tool_retries=config.agents.defaults.action_tool_retries,
         max_iterations=config.agents.defaults.max_tool_iterations,
         brave_api_key=config.tools.web.search.api_key or None,
         cron_service=cron,
@@ -307,6 +315,33 @@ def gateway(
     # Set cron job callback (needs agent to be created first)
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
+        if job.payload.kind == "tool_call":
+            tool_name = job.payload.tool_name
+            if not tool_name:
+                raise ValueError(f"Cron job '{job.id}' is tool_call but tool_name is missing")
+
+            delivery_channel = job.payload.channel or "telegram"
+            delivery_to = job.payload.to
+
+            # Rehydrate tool contexts for direct cron-triggered tool execution.
+            if delivery_to:
+                for context_tool_name in ("message", "spawn", "cron", "voice_call"):
+                    context_tool = agent.tools.get(context_tool_name)
+                    if context_tool and hasattr(context_tool, "set_context"):
+                        context_tool.set_context(delivery_channel, delivery_to)
+
+            result = await agent.tools.execute(tool_name, job.payload.tool_args or {})
+
+            if job.payload.deliver and delivery_to:
+                from flowly.bus.events import OutboundMessage
+                await bus.publish_outbound(OutboundMessage(
+                    channel=delivery_channel,
+                    chat_id=delivery_to,
+                    content=result or "✓ İşlem tamamlandı.",
+                ))
+
+            return result
+
         # Build the prompt - if delivery is requested, tell agent to send message
         prompt = job.payload.message
 
@@ -422,6 +457,16 @@ Kullanıcı şunu söyledi: "{text}"
     console.print(f"[green]✓[/green] API: http://{config.gateway.host}:{port}")
 
     async def run():
+        shutdown_event = asyncio.Event()
+
+        def signal_handler():
+            console.print("\n[yellow]Shutting down...[/yellow]")
+            shutdown_event.set()
+
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, signal_handler)
+
         try:
             await gateway_server.start()
             await cron.start()
@@ -431,12 +476,33 @@ Kullanıcı şunu söyledi: "{text}"
             if voice_plugin:
                 await voice_plugin.start(host="0.0.0.0", port=8765)
 
-            await asyncio.gather(
-                agent.run(),
-                channels.start_all(),
+            # Run until shutdown signal
+            async def run_until_shutdown():
+                await asyncio.gather(
+                    agent.run(),
+                    channels.start_all(),
+                )
+
+            # Create main task
+            main_task = asyncio.create_task(run_until_shutdown())
+
+            # Wait for either shutdown signal or task completion
+            done, pending = await asyncio.wait(
+                [main_task, asyncio.create_task(shutdown_event.wait())],
+                return_when=asyncio.FIRST_COMPLETED
             )
-        except KeyboardInterrupt:
-            console.print("\nShutting down...")
+
+            # Cancel pending tasks
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+        finally:
+            # Graceful shutdown
+            console.print("[dim]Cleaning up...[/dim]")
             if voice_plugin:
                 await voice_plugin.stop()
             await gateway_server.stop()
@@ -444,6 +510,7 @@ Kullanıcı şunu söyledi: "{text}"
             cron.stop()
             agent.stop()
             await channels.stop_all()
+            console.print("[green]✓[/green] Shutdown complete")
 
     asyncio.run(run())
 
@@ -508,6 +575,8 @@ def agent(
     exec_cfg = config.tools.exec
     exec_config = ExecConfig(
         enabled=exec_cfg.enabled,
+        security=exec_cfg.security,
+        ask=exec_cfg.ask,
         timeout_seconds=exec_cfg.timeout_seconds,
         max_output_chars=exec_cfg.max_output_chars,
         approval_timeout_seconds=exec_cfg.approval_timeout_seconds,
@@ -517,6 +586,10 @@ def agent(
         bus=bus,
         provider=provider,
         workspace=config.workspace_path,
+        model=config.agents.defaults.model,
+        action_model=config.agents.defaults.action_model,
+        action_temperature=config.agents.defaults.action_temperature,
+        action_tool_retries=config.agents.defaults.action_tool_retries,
         brave_api_key=config.tools.web.search.api_key or None,
         cron_service=cron,
         context_messages=config.agents.defaults.context_messages,

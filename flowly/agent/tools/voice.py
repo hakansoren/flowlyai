@@ -30,10 +30,17 @@ class VoiceCallTool(Tool):
                           the tool will be disabled.
         """
         self._voice_plugin = voice_plugin
+        self._telegram_chat_id: str | None = None
 
     def set_voice_plugin(self, voice_plugin: "VoicePlugin"):
         """Set the voice plugin instance."""
         self._voice_plugin = voice_plugin
+
+    def set_context(self, channel: str, chat_id: str):
+        """Set the current context for linking calls to Telegram."""
+        if channel == "telegram":
+            self._telegram_chat_id = chat_id
+            logger.info(f"Voice tool context set: telegram:{chat_id}")
 
     @property
     def name(self) -> str:
@@ -80,6 +87,10 @@ Examples:
                     "type": "string",
                     "description": "Initial greeting message (for action=call)",
                 },
+                "script": {
+                    "type": "string",
+                    "description": "Full first message/script to speak immediately after call is answered (for action=call)",
+                },
                 "message": {
                     "type": "string",
                     "description": "Message to speak (for action=speak, end_call)",
@@ -90,6 +101,8 @@ Examples:
                 },
             },
             "required": ["action"],
+            # Keep schema provider-compatible: some providers reject top-level
+            # allOf/anyOf/oneOf. Action-specific validation is enforced in execute().
         }
 
     async def execute(self, action: str, **kwargs: Any) -> str:
@@ -102,6 +115,7 @@ Examples:
                 return await self._make_call(
                     to=kwargs.get("to", ""),
                     greeting=kwargs.get("greeting"),
+                    script=kwargs.get("script"),
                 )
             elif action == "speak":
                 return await self._speak(
@@ -122,20 +136,58 @@ Examples:
             logger.error(f"Voice call error: {e}")
             return f"Error: {str(e)}"
 
-    async def _make_call(self, to: str, greeting: str | None = None) -> str:
+    def _resolve_initial_greeting(self, greeting: str | None, script: str | None) -> str:
+        """Resolve the first spoken message for a new call."""
+        if greeting and greeting.strip():
+            return greeting.strip()
+        if script and script.strip():
+            return script.strip()
+        return (
+            "Merhaba, Flowly arıyor. Kısa bir bilgilendirme yapacağım. "
+            "Müsaitsen şimdi paylaşabilirim."
+        )
+
+    def _resolve_default_to_number(self) -> str | None:
+        """Resolve default target phone number from voice plugin config, if available."""
+        plugin_config = getattr(self._voice_plugin, "config", None)
+        if not plugin_config:
+            return None
+        voice_cfg = getattr(getattr(plugin_config, "integrations", None), "voice", None)
+        if not voice_cfg:
+            return None
+        number = getattr(voice_cfg, "default_to_number", "") or ""
+        number = str(number).strip()
+        return number or None
+
+    async def _make_call(self, to: str, greeting: str | None = None, script: str | None = None) -> str:
         """Make a call."""
-        if not to:
-            return "Error: 'to' phone number is required"
+        to_number = (to or "").strip() or self._resolve_default_to_number()
+        if not to_number:
+            return (
+                "Error: 'to' phone number is required. "
+                "You can also set integrations.voice.default_to_number in config."
+            )
 
-        call_sid = await self._voice_plugin.make_call(to_number=to)
+        initial_greeting = self._resolve_initial_greeting(greeting, script)
 
-        if greeting:
-            await self._voice_plugin.call_manager.speak(call_sid, greeting)
+        # Pass telegram_chat_id and greeting to make_call
+        # Greeting will be queued when call is answered (not before!)
+        call_sid = await self._voice_plugin.make_call(
+            to_number=to_number,
+            telegram_chat_id=self._telegram_chat_id,
+            greeting=initial_greeting,
+        )
+
+        logger.info(
+            f"Call initiated: {call_sid} with telegram_chat_id={self._telegram_chat_id}, "
+            f"greeting_len={len(initial_greeting)}"
+        )
 
         return f"""📞 Call initiated!
 
 Call SID: {call_sid}
-To: {to}
+To: {to_number}
+Opening message: {initial_greeting}
 
 The call is being placed. When the user answers and speaks, their words will appear in the conversation.
 Your responses will be automatically spoken to them."""

@@ -2,6 +2,8 @@
 
 This document describes the tools available to Flowly.
 
+Tool schema at runtime is authoritative. If this document conflicts with tool parameter schema, follow the schema.
+
 ## File Operations
 
 ### read_file
@@ -44,12 +46,12 @@ exec(command: str, working_dir: str = None) -> str
 ## Web Access
 
 ### web_search
-Search the web using DuckDuckGo.
+Search the web using Brave Search API.
 ```
 web_search(query: str) -> str
 ```
 
-Returns top 5 search results with titles, URLs, and snippets.
+Returns top results with titles, URLs, and snippets.
 
 ### web_fetch
 Fetch and extract main content from a URL.
@@ -69,29 +71,54 @@ Send a message to the user (used internally).
 message(content: str, channel: str = None, chat_id: str = None) -> str
 ```
 
-## Scheduled Reminders (Cron)
+## Scheduled Tasks (Cron)
 
-Use the `exec` tool to create scheduled reminders with `flowly cron add`:
-
-### Set a recurring reminder
-```bash
-# Every day at 9am
-flowly cron add --name "morning" --message "Good morning!" --cron "0 9 * * *"
-
-# Every 2 hours
-flowly cron add --name "water" --message "Drink water!" --every 7200
+### cron
+Manage scheduled jobs and reminders.
+```
+cron(
+  action: "list" | "add" | "remove" | "enable" | "disable" | "status",
+  name?: str,
+  message?: str,
+  schedule?: str,      # "at +1m", "every 1h", "0 9 * * *", ...
+  job_id?: str,
+  deliver?: bool,
+  channel?: str,
+  to?: str,
+  tool_name?: str,     # optional: run a specific tool when job fires
+  tool_args?: object   # args for tool_name
+) -> str
 ```
 
-### Set a one-time reminder
-```bash
-# At a specific time (ISO format)
-flowly cron add --name "meeting" --message "Meeting starts now!" --at "2025-01-31T15:00:00"
+Examples:
+```python
+# Standard reminder
+cron(action="add", name="reminder", message="Toplantı zamanı", schedule="at +30m", deliver=True)
+
+# Typed tool execution (no second LLM interpretation)
+cron(
+  action="add",
+  name="call-hakan",
+  schedule="at +1m",
+  tool_name="voice_call",
+  tool_args={"action": "call", "to": "+905306067499", "script": "Hakan, kritik bir issue var."},
+  deliver=True
+)
 ```
 
-### Manage reminders
-```bash
-flowly cron list              # List all jobs
-flowly cron remove <job_id>   # Remove a job
+## Voice Calls
+
+### voice_call
+Make/manage phone calls through integrated voice plugin.
+```
+voice_call(
+  action: "call" | "speak" | "end_call" | "list_calls",
+  to?: str,            # required for action="call"
+  greeting?: str,      # opening line
+  script?: str,        # opening script alternative to greeting
+  message?: str,       # for speak/end_call
+  call_sid?: str       # for speak/end_call
+) -> str
 ```
 
 ## Heartbeat Task Management

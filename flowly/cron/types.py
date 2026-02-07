@@ -1,6 +1,7 @@
 """Cron types."""
 
 from dataclasses import dataclass, field
+from typing import Any
 from typing import Literal
 
 
@@ -21,12 +22,14 @@ class CronSchedule:
 @dataclass
 class CronPayload:
     """What to do when the job runs."""
-    kind: Literal["system_event", "agent_turn"] = "agent_turn"
+    kind: Literal["system_event", "agent_turn", "tool_call"] = "agent_turn"
     message: str = ""
     # Deliver response to channel
     deliver: bool = False
     channel: str | None = None  # e.g. "whatsapp"
     to: str | None = None  # e.g. phone number
+    tool_name: str | None = None
+    tool_args: dict[str, Any] | None = None
 
 
 @dataclass

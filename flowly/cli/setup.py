@@ -443,48 +443,121 @@ def setup_voice_calls() -> bool:
     return True
 
 
+def _get_module_statuses() -> list[tuple[str, str, str]]:
+    """Get configuration status for each setup module.
+
+    Returns list of (label, status_icon, detail) tuples.
+    """
+    from flowly.config.loader import load_config
+
+    config = load_config()
+    statuses = []
+
+    # 1. LLM Provider
+    api_key = config.providers.openrouter.api_key
+    if api_key:
+        model = config.agents.defaults.model or "default"
+        statuses.append(("LLM Provider", "[green]✓[/green]", f"[dim]{model}[/dim]"))
+    else:
+        statuses.append(("LLM Provider", "[red]✗[/red]", "[dim]not configured[/dim]"))
+
+    # 2. Telegram Bot
+    token = config.channels.telegram.token
+    if token:
+        # Quick check without async validation
+        masked = token[:8] + "..."
+        statuses.append(("Telegram Bot", "[green]✓[/green]", f"[dim]{masked}[/dim]"))
+    else:
+        statuses.append(("Telegram Bot", "[red]✗[/red]", "[dim]not configured[/dim]"))
+
+    # 3. Voice Transcription
+    groq_key = config.providers.groq.api_key
+    if groq_key:
+        statuses.append(("Voice Transcription", "[green]✓[/green]", "[dim]groq[/dim]"))
+    else:
+        statuses.append(("Voice Transcription", "[red]✗[/red]", "[dim]not configured[/dim]"))
+
+    # 4. Voice Calls
+    voice_cfg = config.integrations.voice
+    if voice_cfg.enabled and voice_cfg.twilio_account_sid:
+        phone = voice_cfg.twilio_phone_number or "?"
+        statuses.append(("Voice Calls", "[green]✓[/green]", f"[dim]{phone}[/dim]"))
+    else:
+        statuses.append(("Voice Calls", "[red]✗[/red]", "[dim]not configured[/dim]"))
+
+    # 5. Trello
+    trello = config.integrations.trello
+    if trello.api_key and trello.token:
+        statuses.append(("Trello", "[green]✓[/green]", "[dim]connected[/dim]"))
+    else:
+        statuses.append(("Trello", "[red]✗[/red]", "[dim]not configured[/dim]"))
+
+    return statuses
+
+
 def setup_all() -> None:
-    """Run the complete setup wizard."""
-    from flowly import __logo__
+    """Run the interactive setup wizard with arrow-key module selection."""
+    from flowly import __banner__, __version__
+    from simple_term_menu import TerminalMenu
 
-    console.print(f"\n{__logo__} [bold]Flowly Setup Wizard[/bold]\n")
+    console.print(f"[cyan]{__banner__.format(version=__version__)}[/cyan]")
+    console.print("[bold]Setup Wizard[/bold]")
+    console.print("[dim]Use arrow keys to navigate, Enter to select[/dim]\n")
 
-    # LLM Provider (required)
-    console.print("[bold]Step 1/5: LLM Provider[/bold]")
-    if not setup_openrouter():
-        console.print("[red]LLM setup failed. Cannot continue.[/red]")
+    # Module registry: (label, setup_function)
+    modules = [
+        ("LLM Provider", setup_openrouter),
+        ("Telegram Bot", setup_telegram),
+        ("Voice Transcription", setup_voice),
+        ("Voice Calls", setup_voice_calls),
+        ("Trello", setup_trello),
+    ]
+
+    # Build menu entries with status indicators
+    statuses = _get_module_statuses()
+    menu_entries = []
+    for label, icon_rich, detail_rich in statuses:
+        # Strip rich markup for terminal menu
+        is_configured = "✓" in icon_rich
+        icon = "✓" if is_configured else "✗"
+        # Extract detail text from rich markup
+        detail = detail_rich.replace("[dim]", "").replace("[/dim]", "")
+        menu_entries.append(f"{label:<22} {icon} {detail}")
+
+    menu_entries.append("Run all (full setup)")
+    menu_entries.append("Quit")
+
+    menu = TerminalMenu(
+        menu_entries,
+        title="Select a module to configure:",
+    )
+
+    selected = menu.show()
+
+    if selected is None:
+        console.print("[dim]Setup cancelled.[/dim]")
         return
 
-    # Telegram (optional)
-    console.print("\n[bold]Step 2/5: Telegram Bot[/bold]")
-    if Confirm.ask("Set up Telegram bot?", default=True):
-        setup_telegram()
-    else:
-        console.print("[dim]Skipped[/dim]")
+    quit_idx = len(modules) + 1
+    all_idx = len(modules)
 
-    # Voice transcription (optional)
-    console.print("\n[bold]Step 3/5: Voice Transcription[/bold]")
-    if Confirm.ask("Set up voice transcription (Groq)?", default=True):
-        setup_voice()
-    else:
-        console.print("[dim]Skipped[/dim]")
+    if selected == quit_idx:
+        console.print("[dim]Setup cancelled.[/dim]")
+        return
 
-    # Voice calls (optional)
-    console.print("\n[bold]Step 4/5: Voice Calls (Twilio)[/bold]")
-    if Confirm.ask("Set up voice calls (requires Twilio account)?", default=False):
-        setup_voice_calls()
+    if selected == all_idx:
+        for label, setup_fn in modules:
+            console.print(f"\n{'─' * 40}")
+            console.print(f"[bold]Setting up: {label}[/bold]")
+            setup_fn()
     else:
-        console.print("[dim]Skipped[/dim]")
-
-    # Trello (optional)
-    console.print("\n[bold]Step 5/5: Trello Integration[/bold]")
-    if Confirm.ask("Set up Trello integration?", default=False):
-        setup_trello()
-    else:
-        console.print("[dim]Skipped[/dim]")
+        label, setup_fn = modules[selected]
+        console.print(f"\n{'─' * 40}")
+        console.print(f"[bold]Setting up: {label}[/bold]")
+        setup_fn()
 
     # Done
-    console.print("\n" + "─" * 40)
+    console.print(f"\n{'─' * 40}")
     console.print("[bold green]✓ Setup complete![/bold green]\n")
     console.print("Start Flowly with: [cyan]flowly gateway[/cyan]")
     console.print()

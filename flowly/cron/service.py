@@ -5,7 +5,7 @@ import json
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Coroutine
+from typing import Any, Callable, Coroutine, Literal
 
 from loguru import logger
 
@@ -80,6 +80,8 @@ class CronService:
                             deliver=j["payload"].get("deliver", False),
                             channel=j["payload"].get("channel"),
                             to=j["payload"].get("to"),
+                            tool_name=j["payload"].get("toolName"),
+                            tool_args=j["payload"].get("toolArgs"),
                         ),
                         state=CronJobState(
                             next_run_at_ms=j.get("state", {}).get("nextRunAtMs"),
@@ -127,6 +129,8 @@ class CronService:
                         "deliver": j.payload.deliver,
                         "channel": j.payload.channel,
                         "to": j.payload.to,
+                        "toolName": j.payload.tool_name,
+                        "toolArgs": j.payload.tool_args,
                     },
                     "state": {
                         "nextRunAtMs": j.state.next_run_at_ms,
@@ -222,6 +226,10 @@ class CronService:
             response = None
             if self.on_job:
                 response = await self.on_job(job)
+
+            # Treat explicit tool/job error responses as failed executions.
+            if isinstance(response, str) and response.strip().lower().startswith("error"):
+                raise RuntimeError(response)
             
             job.state.last_status = "ok"
             job.state.last_error = None
@@ -263,6 +271,9 @@ class CronService:
         channel: str | None = None,
         to: str | None = None,
         delete_after_run: bool = False,
+        payload_kind: Literal["system_event", "agent_turn", "tool_call"] = "agent_turn",
+        tool_name: str | None = None,
+        tool_args: dict[str, Any] | None = None,
     ) -> CronJob:
         """Add a new job."""
         store = self._load_store()
@@ -274,11 +285,13 @@ class CronService:
             enabled=True,
             schedule=schedule,
             payload=CronPayload(
-                kind="agent_turn",
+                kind=payload_kind,
                 message=message,
                 deliver=deliver,
                 channel=channel,
                 to=to,
+                tool_name=tool_name,
+                tool_args=tool_args,
             ),
             state=CronJobState(next_run_at_ms=_compute_next_run(schedule, now)),
             created_at_ms=now,
