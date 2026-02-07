@@ -75,17 +75,27 @@ def create_voice_app(
         )
 
     async def handle_outgoing_call(request: Request) -> Response:
-        """Handle outgoing call webhook (when our call is answered).
+        """Handle outgoing call webhook (when call is answered).
 
         Returns TwiML to connect media stream.
         """
-        form = await request.form()
-        call_sid = form.get("CallSid", "")
-        call_status = form.get("CallStatus", "")
+        try:
+            form = await request.form()
+            call_sid = form.get("CallSid", "")
+            call_status = form.get("CallStatus", "")
+            from_number = form.get("From", "")
+            to_number = form.get("To", "")
 
-        logger.info(f"Outgoing call status: {call_sid} -> {call_status}")
+            print(f"[VOICE] Outgoing call: {call_sid} status={call_status} from={from_number} to={to_number}")
 
-        if call_status == "in-progress":
+            # Create call state if not exists
+            if not call_manager.get_call(call_sid):
+                call_manager.create_call(
+                    call_sid=call_sid,
+                    from_number=from_number,
+                    to_number=to_number,
+                )
+
             # Build media stream URL
             stream_url = f"{webhook_base_url.replace('https://', 'wss://').replace('http://', 'ws://')}/media-stream"
 
@@ -98,15 +108,21 @@ def create_voice_app(
     </Connect>
 </Response>"""
 
+            print(f"[VOICE] Returning TwiML for call {call_sid} with stream URL {stream_url}")
+
             return Response(
                 content=twiml,
                 media_type="application/xml",
             )
-
-        return Response(
-            content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
-            media_type="application/xml",
-        )
+        except Exception as e:
+            print(f"[VOICE ERROR] handle_outgoing_call: {e}")
+            import traceback
+            traceback.print_exc()
+            # Return empty TwiML on error
+            return Response(
+                content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                media_type="application/xml",
+            )
 
     async def handle_call_status(request: Request) -> Response:
         """Handle call status webhook."""
@@ -133,6 +149,11 @@ def create_voice_app(
                 data = json.loads(message)
                 event = data.get("event")
 
+                # Log all events except media (too noisy)
+                if event != "media":
+                    print(f"[VOICE] WebSocket event: {event}")
+                    logger.info(f"WebSocket event: {event}, data keys: {list(data.keys())}")
+
                 if event == "connected":
                     logger.info("Media stream connected")
 
@@ -141,6 +162,8 @@ def create_voice_app(
                     start_data = data.get("start", {})
                     call_sid = start_data.get("customParameters", {}).get("callSid")
 
+                    print(f"[VOICE] Stream started: stream_sid={stream_sid}, call_sid={call_sid}")
+                    print(f"[VOICE] Start data: {start_data}")
                     logger.info(f"Media stream started: {stream_sid} for call {call_sid}")
 
                     # Register stream
@@ -203,6 +226,7 @@ class TwilioClient:
         to_number: str,
         call_manager: CallManager,
         telegram_chat_id: str | None = None,
+        pending_greeting: str | None = None,
     ) -> str:
         """Initiate an outbound call.
 
@@ -210,6 +234,7 @@ class TwilioClient:
             to_number: Phone number to call
             call_manager: Call manager instance
             telegram_chat_id: Optional Telegram chat ID to link session
+            pending_greeting: Optional greeting to speak when call is answered
 
         Returns:
             Call SID
@@ -218,16 +243,7 @@ class TwilioClient:
 
         url = f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}/Calls.json"
 
-        # TwiML for outbound call
-        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Connect>
-        <Stream url="{self.webhook_base_url.replace('https://', 'wss://').replace('http://', 'ws://')}/media-stream">
-            <Parameter name="callSid" value="{{{{CallSid}}}}"/>
-        </Stream>
-    </Connect>
-</Response>"""
-
+        # Use URL callback instead of inline TwiML so Twilio can pass CallSid
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 url,
@@ -235,7 +251,7 @@ class TwilioClient:
                 data={
                     "To": to_number,
                     "From": self.phone_number,
-                    "Twiml": twiml,
+                    "Url": f"{self.webhook_base_url}/outgoing",
                     "StatusCallback": f"{self.webhook_base_url}/status",
                     "StatusCallbackEvent": ["initiated", "ringing", "answered", "completed"],
                 },
@@ -247,12 +263,13 @@ class TwilioClient:
             result = response.json()
             call_sid = result["sid"]
 
-            # Create call state
+            # Create call state with pending greeting
             call_manager.create_call(
                 call_sid=call_sid,
                 from_number=self.phone_number,
                 to_number=to_number,
                 telegram_chat_id=telegram_chat_id,
+                pending_greeting=pending_greeting,
             )
 
             logger.info(f"Outbound call initiated: {call_sid} to {to_number}")

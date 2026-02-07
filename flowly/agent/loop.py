@@ -1,7 +1,9 @@
 """Agent loop: the core processing engine."""
 
 import asyncio
+import copy
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +53,9 @@ class AgentLoop:
         provider: LLMProvider,
         workspace: Path,
         model: str | None = None,
+        action_model: str | None = None,
+        action_temperature: float = 0.1,
+        action_tool_retries: int = 2,
         max_iterations: int = 20,
         brave_api_key: str | None = None,
         cron_service: CronService | None = None,
@@ -64,6 +69,9 @@ class AgentLoop:
         self.provider = provider
         self.workspace = workspace
         self.model = model or provider.get_default_model()
+        self.action_model = action_model
+        self.action_temperature = action_temperature
+        self.action_tool_retries = max(0, action_tool_retries)
         self.max_iterations = max_iterations
         self.brave_api_key = brave_api_key
         self.cron_service = cron_service
@@ -172,24 +180,28 @@ class AgentLoop:
         while self._running:
             try:
                 # Wait for next message
-                msg = await asyncio.wait_for(
+                first_msg = await asyncio.wait_for(
                     self.bus.consume_inbound(),
                     timeout=1.0
                 )
-                
-                # Process it
-                try:
-                    response = await self._process_message(msg)
-                    if response:
-                        await self.bus.publish_outbound(response)
-                except Exception as e:
-                    logger.error(f"Error processing message: {e}")
-                    # Send error response
-                    await self.bus.publish_outbound(OutboundMessage(
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
-                        content=f"Sorry, I encountered an error: {str(e)}"
-                    ))
+                batch, dropped = self._coalesce_inbound_batch(first_msg)
+                if dropped:
+                    logger.warning(f"Inbound coalescing dropped {dropped} stale message(s)")
+
+                # Process coalesced batch
+                for msg in batch:
+                    try:
+                        response = await self._process_message(msg)
+                        if response:
+                            await self.bus.publish_outbound(response)
+                    except Exception as e:
+                        logger.error(f"Error processing message: {e}")
+                        # Send error response
+                        await self.bus.publish_outbound(OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content=f"Sorry, I encountered an error: {str(e)}"
+                        ))
             except asyncio.TimeoutError:
                 continue
     
@@ -204,6 +216,391 @@ class AgentLoop:
         cron_tool = self.tools.get("cron")
         if isinstance(cron_tool, CronTool):
             cron_tool.set_cron_service(cron_service)
+
+    def _extract_action_intent_text(self, content: str) -> str:
+        """
+        Extract the user utterance from voice-wrapped prompts for intent detection.
+
+        Voice prompts include additional instructions that contain action words
+        (e.g. "kapat"). We only want to analyze what the user actually said.
+        """
+        voice_patterns = (
+            r'Kullanıcı şunu söyledi:\s*"(.*?)"',
+            r'User said:\s*"(.*?)"',
+        )
+        for pattern in voice_patterns:
+            match = re.search(pattern, content, flags=re.DOTALL | re.IGNORECASE)
+            if match:
+                return match.group(1).strip().lower()
+        return content.lower()
+
+    def _is_action_turn(self, channel: str, content: str) -> bool:
+        """Detect whether this turn is an action request that should execute tools strictly."""
+        lowered = content.lower()
+        if "voice_call(" in lowered or "cron(" in lowered:
+            return True
+
+        intent_text = self._extract_action_intent_text(content)
+        action_patterns = (
+            r"\barasana\b",
+            r"\barar\s+m[ıi]s[ıi]n\b",
+            r"\bara\b",
+            r"\baray[ıi]p\b",
+            r"\barama\b",
+            r"\btelefon(?:la)?\b",
+            r"\bcall\b",
+            r"\bhat[ıi]rlat\b",
+            r"\bremind(?:er)?\b",
+            r"\bhaber\s+ver\b",
+            r"\bbildir\b",
+            r"\bnotify\b",
+            r"\bschedule\b",
+            r"\bplanla\b",
+            r"\bcron\s+olu[şs]tur\b",
+            r"\bg[öo]nder\b",
+            r"\bsend\b",
+            r"\bpayla[şs]\b",
+            r"\bekran\s+g[öo]r[üu]nt[üu]s[üu]\b",
+            r"\bscreenshot\b",
+            r"\bss\b",
+            r"\brun\s+tool\b",
+        )
+        return any(re.search(pattern, intent_text) for pattern in action_patterns)
+
+    def _is_live_call_turn(self, content: str) -> bool:
+        """
+        Detect active call orchestration prompts.
+
+        In this mode, voice output is already handled by the call pipeline,
+        so the model should not use `voice_call(action="speak")`.
+        """
+        lowered = content.lower()
+        return (
+            "[aktif telefon görüşmesi]" in lowered
+            or "[aktif telefon gorusmesi]" in lowered
+            or ("call sid:" in lowered and "kullanıcı şunu söyledi:" in lowered)
+            or ("call sid:" in lowered and "user said:" in lowered)
+        )
+
+    def _apply_turn_tool_policy(
+        self,
+        tool_defs: list[dict[str, Any]],
+        live_call_turn: bool,
+    ) -> list[dict[str, Any]]:
+        """Apply per-turn tool constraints for safety and predictability."""
+        if not live_call_turn:
+            return tool_defs
+
+        filtered_defs: list[dict[str, Any]] = []
+        for tool_def in tool_defs:
+            fn = tool_def.get("function", {})
+            if fn.get("name") != "voice_call":
+                filtered_defs.append(tool_def)
+                continue
+
+            # During active phone conversation turns, avoid self-referential
+            # speak tool calls. The returned assistant text is spoken already.
+            patched = copy.deepcopy(tool_def)
+            action_prop = (
+                patched.get("function", {})
+                .get("parameters", {})
+                .get("properties", {})
+                .get("action")
+            )
+            if isinstance(action_prop, dict):
+                enum_values = action_prop.get("enum")
+                if isinstance(enum_values, list):
+                    action_prop["enum"] = [
+                        value for value in enum_values
+                        if value in {"end_call", "list_calls"}
+                    ]
+            filtered_defs.append(patched)
+
+        return filtered_defs
+
+    def _coalesce_inbound_batch(self, first_msg: InboundMessage) -> tuple[list[InboundMessage], int]:
+        """
+        Coalesce bursty inbound traffic to reduce stale turn processing.
+
+        Keeps the latest message per interactive session while preserving
+        first-seen ordering across sessions.
+        """
+        interactive_channels = {"telegram", "whatsapp", "cli"}
+        batch = [first_msg]
+
+        while True:
+            try:
+                batch.append(self.bus.inbound.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+
+        if len(batch) == 1:
+            return batch, 0
+
+        coalesced: list[InboundMessage] = []
+        session_index: dict[str, int] = {}
+        dropped = 0
+
+        for msg in batch:
+            if msg.channel in interactive_channels:
+                key = msg.session_key
+                if key in session_index:
+                    coalesced[session_index[key]] = msg
+                    dropped += 1
+                else:
+                    session_index[key] = len(coalesced)
+                    coalesced.append(msg)
+            else:
+                coalesced.append(msg)
+
+        return coalesced, dropped
+
+    async def _run_llm_tool_loop(
+        self,
+        messages: list[dict[str, Any]],
+        action_turn: bool,
+        live_call_turn: bool = False,
+    ) -> tuple[str, list[dict[str, Any]], list[str]]:
+        """
+        Run iterative LLM + tool execution loop until final response.
+
+        Returns:
+            (final_content, accumulated_tool_results, executed_tool_names)
+        """
+        iteration = 0
+        final_content: str | None = None
+        accumulated_tool_results: list[dict[str, Any]] = []
+        executed_tool_names: list[str] = []
+        tools_were_used = False
+        no_tool_retry_count = 0
+
+        selected_model = (self.action_model or self.model) if action_turn else self.model
+        selected_temperature = self.action_temperature if action_turn else 0.7
+
+        while iteration < self.max_iterations:
+            iteration += 1
+
+            tool_defs = self._apply_turn_tool_policy(
+                self.tools.get_definitions(),
+                live_call_turn=live_call_turn,
+            )
+            tool_choice = "required" if (action_turn and not tools_were_used) else "auto"
+            logger.info(
+                "LLM request telemetry: "
+                f"model={selected_model}, tool_choice={tool_choice}, tool_count={len(tool_defs)}, "
+                f"action_turn={action_turn}, live_call_turn={live_call_turn}, "
+                f"iteration={iteration}/{self.max_iterations}"
+            )
+
+            response = await self.provider.chat(
+                messages=messages,
+                tools=tool_defs,
+                model=selected_model,
+                temperature=selected_temperature,
+                tool_choice=tool_choice,
+            )
+
+            if response.content and response.content.startswith("Error") and tool_choice == "required":
+                logger.warning(f"tool_choice=required failed, retrying with auto: {response.content[:120]}")
+                response = await self.provider.chat(
+                    messages=messages,
+                    tools=tool_defs,
+                    model=selected_model,
+                    temperature=selected_temperature,
+                    tool_choice="auto",
+                )
+
+            if response.content and response.content.startswith("Error calling LLM:"):
+                lowered_error = response.content.lower()
+                schema_rejected = (
+                    "input_schema does not support oneof" in lowered_error
+                    or "input_schema does not support allof" in lowered_error
+                    or "input_schema does not support anyof" in lowered_error
+                )
+                if schema_rejected:
+                    logger.error("Provider rejected tool schema; aborting turn without additional retries.")
+                    final_content = (
+                        "Tool şeması model sağlayıcısı tarafından reddedildi. "
+                        "İşlem çalıştırılmadı."
+                    )
+                else:
+                    logger.error("LLM call failed after fallback; aborting turn without additional retries.")
+                    final_content = (
+                        "Model sağlayıcısından geçerli yanıt alınamadı. "
+                        "İşlem çalıştırılmadı."
+                    )
+                break
+
+            logger.info(
+                "LLM response telemetry: "
+                f"has_tool_calls={response.has_tool_calls}, content_len={len(response.content or '')}, "
+                f"action_turn={action_turn}, live_call_turn={live_call_turn}, iteration={iteration}"
+            )
+
+            if response.has_tool_calls:
+                tool_call_dicts = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.arguments),
+                        },
+                    }
+                    for tc in response.tool_calls
+                ]
+
+                assistant_content = None
+                if response.content:
+                    content_lower = response.content.lower()
+                    hallucination_phrases = [
+                        "yaptım", "gönderdim", "aldım", "açtım", "kapattım",
+                        "i did", "i sent", "i took", "i opened", "i closed",
+                        "done", "completed", "finished", "tamamlandı",
+                    ]
+                    if not any(phrase in content_lower for phrase in hallucination_phrases):
+                        assistant_content = response.content
+
+                messages = self.context.add_assistant_message(
+                    messages, assistant_content, tool_call_dicts
+                )
+
+                turn_tools: list[str] = []
+                terminal_action_executed = False
+                turn_success_count = 0
+                for tool_call in response.tool_calls:
+                    turn_tools.append(tool_call.name)
+                    executed_tool_names.append(tool_call.name)
+                    args_str = json.dumps(tool_call.arguments)
+                    logger.info(f"Executing tool: {tool_call.name}({args_str[:160]}...)")
+
+                    try:
+                        result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                        accumulated_tool_results.append({
+                            "tool": tool_call.name,
+                            "success": not result.startswith("Error"),
+                            "result": result[:500] if len(result) > 500 else result,
+                        })
+                    except Exception as e:
+                        result = f"Error executing {tool_call.name}: {str(e)}"
+                        logger.error(result)
+                        accumulated_tool_results.append({
+                            "tool": tool_call.name,
+                            "success": False,
+                            "result": result,
+                        })
+                    else:
+                        if not result.startswith("Error"):
+                            turn_success_count += 1
+
+                    messages = self.context.add_tool_result(
+                        messages, tool_call.id, tool_call.name, result
+                    )
+
+                    # In strict action turns, stop as soon as a terminal action succeeds.
+                    if action_turn and not result.startswith("Error"):
+                        if tool_call.name == "voice_call":
+                            voice_action = str(tool_call.arguments.get("action", "")).lower()
+                            if voice_action in {"call", "end_call", "speak"}:
+                                terminal_action_executed = True
+                        elif tool_call.name == "cron":
+                            cron_action = str(tool_call.arguments.get("action", "")).lower()
+                            target_tool = str(tool_call.arguments.get("tool_name", "")).lower()
+                            if cron_action == "add" and target_tool == "voice_call":
+                                terminal_action_executed = True
+
+                    if terminal_action_executed:
+                        logger.info(
+                            "Action turn terminal tool executed; skipping remaining tool calls in this batch."
+                        )
+                        break
+
+                logger.info(f"Tool execution telemetry: executed_tools={turn_tools}")
+                tools_were_used = True
+
+                if terminal_action_executed:
+                    successful = [t for t in accumulated_tool_results if t.get("success")]
+                    if successful:
+                        last_ok = successful[-1]
+                        final_content = (
+                            "İşlem tamamlandı.\n"
+                            f"{last_ok['tool']}: {last_ok['result']}"
+                        )
+                    else:
+                        final_content = "İşlem çalıştırıldı."
+                    break
+
+                if action_turn and turn_success_count == 0:
+                    if no_tool_retry_count < self.action_tool_retries:
+                        no_tool_retry_count += 1
+                        logger.warning(
+                            "Action turn tool calls all failed; retrying with corrective instruction "
+                            f"({no_tool_retry_count}/{self.action_tool_retries})"
+                        )
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "Önceki tool çağrısı başarısız oldu. "
+                                "Doğru parametrelerle ilgili tool'u tekrar çağır. "
+                                "Başarısızsa net hata ver, başka alakasız tool çağırma."
+                            ),
+                        })
+                        continue
+                    final_content = "Tool çağrıları başarısız oldu, işlem yapılmadı."
+                    break
+
+                continue
+
+            if action_turn and not tools_were_used:
+                if no_tool_retry_count < self.action_tool_retries:
+                    no_tool_retry_count += 1
+                    logger.warning(
+                        "Action turn returned no tool call; retrying with corrective instruction "
+                        f"({no_tool_retry_count}/{self.action_tool_retries})"
+                    )
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Bu istek bir aksiyon isteği. Uygun tool'u şimdi çağır. "
+                            "Tool çalıştırmadan işlem tamamlandı deme."
+                        ),
+                    })
+                    continue
+
+                final_content = "Tool çağrısı doğrulanamadı, işlem yapılmadı."
+                break
+
+            final_content = response.content
+            break
+
+        if final_content is None:
+            if accumulated_tool_results:
+                summary = f"İşlemler tamamlandı ({len(accumulated_tool_results)} tool çalıştırıldı):\n"
+                for tr in accumulated_tool_results[-5:]:
+                    status = "✓" if tr["success"] else "✗"
+                    summary += f"  {status} {tr['tool']}\n"
+                final_content = summary
+            else:
+                final_content = "İşlem tamamlandı ancak yanıt üretilemedi."
+
+        if not final_content or not final_content.strip():
+            if action_turn and not tools_were_used:
+                final_content = "Tool çağrısı doğrulanamadı, işlem yapılmadı."
+            elif accumulated_tool_results:
+                final_content = "✓ İşlem tamamlandı."
+            else:
+                final_content = "İşlem tamamlandı ancak yanıt üretilemedi."
+
+        logger.info(
+            "LLM final telemetry: "
+            f"final_content_length={len(final_content)}, executed_tools={executed_tool_names}, "
+            f"action_turn={action_turn}, live_call_turn={live_call_turn}"
+        )
+
+        if action_turn and not executed_tool_names:
+            logger.error("Action turn alarm: executed_tools=0")
+
+        return final_content, accumulated_tool_results, executed_tool_names
 
     async def _run_memory_flush(
         self,
@@ -296,7 +693,12 @@ class AgentLoop:
         cron_tool = self.tools.get("cron")
         if isinstance(cron_tool, CronTool):
             cron_tool.set_context(msg.channel, msg.chat_id)
-        
+
+        # Set voice_call tool context for Telegram linking
+        voice_tool = self.tools.get("voice_call")
+        if voice_tool and hasattr(voice_tool, "set_context"):
+            voice_tool.set_context(msg.channel, msg.chat_id)
+
         # Get history and check for compaction
         history = session.get_history(max_messages=self.context_messages)
 
@@ -330,53 +732,13 @@ class AgentLoop:
             media=msg.media if msg.media else None,
         )
 
-        # Agent loop
-        iteration = 0
-        final_content = None
-        
-        while iteration < self.max_iterations:
-            iteration += 1
-            
-            # Call LLM
-            response = await self.provider.chat(
-                messages=messages,
-                tools=self.tools.get_definitions(),
-                model=self.model
-            )
-            
-            # Handle tool calls
-            if response.has_tool_calls:
-                # Add assistant message with tool calls
-                tool_call_dicts = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.name,
-                            "arguments": json.dumps(tc.arguments)  # Must be JSON string
-                        }
-                    }
-                    for tc in response.tool_calls
-                ]
-                messages = self.context.add_assistant_message(
-                    messages, response.content, tool_call_dicts
-                )
-                
-                # Execute tools
-                for tool_call in response.tool_calls:
-                    args_str = json.dumps(tool_call.arguments)
-                    logger.debug(f"Executing tool: {tool_call.name} with arguments: {args_str}")
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
-                    messages = self.context.add_tool_result(
-                        messages, tool_call.id, tool_call.name, result
-                    )
-            else:
-                # No tool calls, we're done
-                final_content = response.content
-                break
-        
-        if final_content is None:
-            final_content = "I've completed processing but have no response to give."
+        action_turn = self._is_action_turn(msg.channel, msg.content)
+        live_call_turn = self._is_live_call_turn(msg.content)
+        final_content, _, _ = await self._run_llm_tool_loop(
+            messages=messages,
+            action_turn=action_turn,
+            live_call_turn=live_call_turn,
+        )
         
         # Save to session
         session.add_message("user", msg.content)
@@ -424,55 +786,25 @@ class AgentLoop:
         cron_tool = self.tools.get("cron")
         if isinstance(cron_tool, CronTool):
             cron_tool.set_context(origin_channel, origin_chat_id)
-        
+
+        # Set voice_call tool context for Telegram linking
+        voice_tool = self.tools.get("voice_call")
+        if voice_tool and hasattr(voice_tool, "set_context"):
+            voice_tool.set_context(origin_channel, origin_chat_id)
+
         # Build messages with the announce content
         messages = self.context.build_messages(
             history=session.get_history(max_messages=self.context_messages),
             current_message=msg.content
         )
         
-        # Agent loop (limited for announce handling)
-        iteration = 0
-        final_content = None
-        
-        while iteration < self.max_iterations:
-            iteration += 1
-            
-            response = await self.provider.chat(
-                messages=messages,
-                tools=self.tools.get_definitions(),
-                model=self.model
-            )
-            
-            if response.has_tool_calls:
-                tool_call_dicts = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.name,
-                            "arguments": json.dumps(tc.arguments)
-                        }
-                    }
-                    for tc in response.tool_calls
-                ]
-                messages = self.context.add_assistant_message(
-                    messages, response.content, tool_call_dicts
-                )
-                
-                for tool_call in response.tool_calls:
-                    args_str = json.dumps(tool_call.arguments)
-                    logger.debug(f"Executing tool: {tool_call.name} with arguments: {args_str}")
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
-                    messages = self.context.add_tool_result(
-                        messages, tool_call.id, tool_call.name, result
-                    )
-            else:
-                final_content = response.content
-                break
-        
-        if final_content is None:
-            final_content = "Background task completed."
+        action_turn = self._is_action_turn(origin_channel, msg.content)
+        live_call_turn = self._is_live_call_turn(msg.content)
+        final_content, _, _ = await self._run_llm_tool_loop(
+            messages=messages,
+            action_turn=action_turn,
+            live_call_turn=live_call_turn,
+        )
         
         # Save to session (mark as system message in history)
         session.add_message("user", f"[System: {msg.sender_id}] {msg.content}")

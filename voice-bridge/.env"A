@@ -1,0 +1,31 @@
+# Twilio Configuration
+TWILIO_ACCOUNT_SID=ACfb8ab1bbd57c0bc374bfc5693268cd89
+TWILIO_AUTH_TOKEN=b728f3fc102ae9088100af797883b720
+TWILIO_PHONE_NUMBER=+12055820901
+
+# Webhook Configuration
+WEBHOOK_BASE_URL=https://chia-unhated-unresonantly.ngrok-free.dev
+WEBHOOK_PORT=8765
+
+# STT Provider (deepgram, openai, or groq)
+STT_PROVIDER=groq
+
+# Deepgram Configuration (if STT_PROVIDER=deepgram)
+DEEPGRAM_API_KEY=b728f3fc102ae9088100af797883b720
+
+# Groq Configuration (if STT_PROVIDER=groq) - Fast Whisper
+GROQ_API_KEY=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
+
+# OpenAI Configuration (for TTS and optional STT)
+OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# Flowly Agent Connection
+FLOWLY_GATEWAY_URL=http://localhost:18790
+
+# Voice Settings
+TTS_VOICE=nova
+TTS_MODEL=tts-1
+LANGUAGE=en-US
+
+# Logging
+LOG_LEVEL=info

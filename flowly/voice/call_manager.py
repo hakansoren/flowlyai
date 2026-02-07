@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 SILENCE_THRESHOLD_MS = 1500  # Silence duration to trigger transcription
 MIN_SPEECH_DURATION_MS = 300  # Minimum speech to process
 SPEECH_ENERGY_THRESHOLD = 500  # RMS threshold for speech detection
+POST_TTS_SUPPRESS_MS = 400  # Brief guard after playback to avoid turn double-trigger
+TRANSCRIPT_DEDUPE_WINDOW_S = 4.0
+TTS_DEDUPE_WINDOW_S = 10.0
 
 
 class CallManager:
@@ -81,6 +84,7 @@ class CallManager:
         from_number: str,
         to_number: str,
         telegram_chat_id: str | None = None,
+        pending_greeting: str | None = None,
     ) -> CallState:
         """Create a new call state."""
         state = CallState(
@@ -89,6 +93,7 @@ class CallManager:
             to_number=to_number,
             status=CallStatus.INITIATED,
             telegram_chat_id=telegram_chat_id,
+            pending_greeting=pending_greeting,
         )
 
         if telegram_chat_id:
@@ -128,6 +133,12 @@ class CallManager:
             self._tts_processor(call_sid)
         )
 
+        # If there's a pending greeting, queue it now that WebSocket is ready
+        if call.pending_greeting:
+            logger.info(f"Queuing pending greeting for call {call_sid}")
+            await call.tts_queue.put(call.pending_greeting)
+            call.pending_greeting = None
+
         logger.info(f"Call answered: {call_sid}, stream: {stream_sid}")
 
     async def handle_call_ended(self, call_sid: str):
@@ -137,6 +148,7 @@ class CallManager:
             return
 
         call.status = CallStatus.COMPLETED
+        call.is_listening = False
         call.ended_at = time.time()
 
         # Cancel TTS task
@@ -148,6 +160,8 @@ class CallManager:
         if call.stream_sid and call.stream_sid in self.streams:
             del self.streams[call.stream_sid]
 
+        # Drop completed call state to avoid unbounded growth.
+        self.calls.pop(call_sid, None)
         logger.info(f"Call ended: {call_sid}")
 
     def register_stream(self, stream_sid: str, websocket):
@@ -170,6 +184,8 @@ class CallManager:
         """
         call = self.calls.get(call_sid)
         if not call or not call.is_listening:
+            return
+        if call.suppress_until and time.time() < call.suppress_until:
             return
 
         # Decode audio
@@ -238,14 +254,30 @@ class CallManager:
             logger.debug(f"Speech too short: {duration_ms}ms, skipping")
             return
 
-        # Stop listening while processing
+        # Stop listening while processing; don't accumulate overlapping user turns.
         call.status = CallStatus.PROCESSING
+        call.is_listening = False
+        queued_response = False
 
         try:
             # Transcribe
             result = await self.stt.transcribe(combined_audio)
 
             if result and result.text:
+                normalized_user_text = " ".join(result.text.strip().lower().split())
+                now = time.time()
+                if (
+                    normalized_user_text
+                    and normalized_user_text == call.last_user_text
+                    and (now - call.last_user_at) < TRANSCRIPT_DEDUPE_WINDOW_S
+                ):
+                    logger.info(
+                        f"Skipping duplicate transcription for call {call.call_sid}: {result.text[:60]}"
+                    )
+                    return
+
+                call.last_user_text = normalized_user_text
+                call.last_user_at = now
                 logger.info(f"Transcription: {result.text}")
 
                 # Get response from agent
@@ -254,12 +286,18 @@ class CallManager:
                 if response:
                     # Queue TTS
                     await self.speak(call.call_sid, response)
+                    queued_response = True
 
         except Exception as e:
             logger.error(f"Error processing speech: {e}")
         finally:
-            call.status = CallStatus.ACTIVE
-            call.is_listening = True
+            if queued_response:
+                # TTS processor will restore ACTIVE/LISTENING when playback ends.
+                call.status = CallStatus.SPEAKING
+                call.is_listening = False
+            else:
+                call.status = CallStatus.ACTIVE
+                call.is_listening = True
 
     async def speak(self, call_sid: str, text: str):
         """Queue text for TTS playback.
@@ -270,20 +308,38 @@ class CallManager:
         """
         call = self.calls.get(call_sid)
         if not call:
+            logger.warning(f"speak() failed: call not found {call_sid}")
             return
 
+        normalized_text = " ".join((text or "").strip().lower().split())
+        now = time.time()
+        if (
+            normalized_text
+            and normalized_text == call.last_spoken_text
+            and (now - call.last_spoken_at) < TTS_DEDUPE_WINDOW_S
+        ):
+            logger.info(f"Skipping duplicate TTS for call {call_sid}: {text[:60]}")
+            return
+
+        call.last_spoken_text = normalized_text
+        call.last_spoken_at = now
+        logger.info(f"Queuing TTS for call {call_sid}: {text[:50]}...")
         await call.tts_queue.put(text)
 
     async def _tts_processor(self, call_sid: str):
         """Background task to process TTS queue for a call."""
         call = self.calls.get(call_sid)
         if not call:
+            logger.warning(f"TTS processor: call not found {call_sid}")
             return
+
+        logger.info(f"TTS processor started for call {call_sid}")
 
         while True:
             try:
                 # Wait for text in queue
                 text = await call.tts_queue.get()
+                logger.info(f"TTS processing: {text[:50]}...")
 
                 # Stop listening while speaking
                 call.is_listening = False
@@ -296,16 +352,19 @@ class CallManager:
                 mulaw_audio = tts_to_twilio(pcm_audio, self.tts.sample_rate)
 
                 # Send to Twilio
+                logger.info(f"Sending {len(mulaw_audio)} bytes audio to Twilio")
                 await self._send_audio(call, mulaw_audio)
 
                 # Resume listening
                 call.status = CallStatus.ACTIVE
                 call.is_listening = True
+                call.suppress_until = time.time() + (POST_TTS_SUPPRESS_MS / 1000)
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Error in TTS processor: {e}")
+                call.status = CallStatus.ACTIVE
                 call.is_listening = True
 
     async def _send_audio(self, call: CallState, audio: bytes):
@@ -324,26 +383,24 @@ class CallManager:
             logger.warning(f"No WebSocket for stream {call.stream_sid}")
             return
 
-        # Twilio expects audio in chunks (e.g., 20ms chunks = 160 bytes at 8kHz)
-        chunk_size = 160  # 20ms of mu-law audio at 8kHz
-        audio_base64 = base64.b64encode(audio).decode()
+        # Twilio expects audio in small chunks (20ms = 160 bytes at 8kHz).
+        chunk_size = 160
 
-        # Send media message
         import json
-        message = {
-            "event": "media",
-            "streamSid": call.stream_sid,
-            "media": {
-                "payload": audio_base64
-            }
-        }
 
         try:
-            await ws.send_text(json.dumps(message))
+            for offset in range(0, len(audio), chunk_size):
+                chunk = audio[offset:offset + chunk_size]
+                audio_base64 = base64.b64encode(chunk).decode()
+                message = {
+                    "event": "media",
+                    "streamSid": call.stream_sid,
+                    "media": {"payload": audio_base64},
+                }
+                await ws.send_text(json.dumps(message))
 
-            # Calculate duration and wait for playback
-            duration_ms = len(audio) * 1000 // TWILIO_SAMPLE_RATE
-            await asyncio.sleep(duration_ms / 1000)
+                duration_ms = max(1, len(chunk) * 1000 // TWILIO_SAMPLE_RATE)
+                await asyncio.sleep(duration_ms / 1000)
 
         except Exception as e:
             logger.error(f"Error sending audio: {e}")
@@ -362,7 +419,7 @@ class CallManager:
         if message:
             await self.speak(call_sid, message)
             # Wait for TTS to complete
-            while not call.tts_queue.empty():
+            while not call.tts_queue.empty() or call.status == CallStatus.SPEAKING:
                 await asyncio.sleep(0.1)
 
         # The actual call termination will be handled by Twilio webhook

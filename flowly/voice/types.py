@@ -44,15 +44,25 @@ class CallState:
     speech_buffer: list[bytes] = field(default_factory=list)
     silence_start: float | None = None
     last_speech_time: float = field(default_factory=time.time)
+    # Temporary guard window to avoid immediate re-trigger after playback
+    suppress_until: float = 0.0
 
     # Session linking
     telegram_chat_id: str | None = None
     session_key: str | None = None
 
+    # Pending greeting to speak when call is answered
+    pending_greeting: str | None = None
+
     # Metadata
     started_at: float = field(default_factory=time.time)
     answered_at: float | None = None
     ended_at: float | None = None
+    # Lightweight dedupe state to avoid repeated turns/speech.
+    last_user_text: str = ""
+    last_user_at: float = 0.0
+    last_spoken_text: str = ""
+    last_spoken_at: float = 0.0
 
     def __post_init__(self):
         # Ensure tts_queue is always an asyncio.Queue

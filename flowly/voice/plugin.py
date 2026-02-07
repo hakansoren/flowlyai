@@ -133,7 +133,25 @@ class VoicePlugin:
         if not call:
             return "Bir hata oluştu."
 
+        # Set message tool context for Telegram if we have chat_id
+        telegram_chat_id = call.telegram_chat_id
+        if telegram_chat_id:
+            from flowly.agent.tools.message import MessageTool
+            message_tool = self.agent.tools.get("message")
+            if isinstance(message_tool, MessageTool):
+                message_tool.set_context("telegram", telegram_chat_id)
+                logger.info(f"Set message context for voice call: telegram:{telegram_chat_id}")
+
         # Build prompt for agent
+        telegram_instruction = ""
+        if telegram_chat_id:
+            telegram_instruction = f"""
+4. Telegram'a göndermek için: message(content="mesaj", media_paths=["/path/to/file"]) - chat_id otomatik ayarlı ({telegram_chat_id})
+5. Screenshot alıp Telegram'a göndermek için: ÖNCE screenshot() çağır, SONRA dönen path'i message() ile gönder."""
+        else:
+            telegram_instruction = """
+4. Telegram erişimi yok - kullanıcıya sadece sesli yanıt verebilirsin."""
+
         prompt = f"""[AKTİF TELEFON GÖRÜŞMESI]
 Call SID: {call_sid}
 Arayan: {call.from_number}
@@ -143,10 +161,10 @@ Kullanıcı şunu söyledi: "{text}"
 ÖNEMLİ KURALLAR:
 1. TÜRKÇE KONUŞ - Kullanıcı Türkçe konuşuyor, sen de Türkçe yanıt ver.
 2. Bu bir telefon görüşmesi - kullanıcı sadece senin söylediklerini duyuyor.
-3. Tool kullanabilirsin (screenshot, exec, web_search, cron vb.) - kullan ve sonucu söyle.
-4. Screenshot alırsan otomatik Telegram'a gider, kullanıcıya "ekran görüntüsünü Telegram'a gönderdim" de.
-5. Aramayı kapatmak için: voice_call(action="end_call", call_sid="{call_sid}", message="Görüşürüz!")
-6. Kısa ve net konuş - telefonda uzun cümleler zor anlaşılır.
+3. Tool kullanabilirsin (screenshot, exec, web_search, cron vb.) - kullan ve sonucu söyle.{telegram_instruction}
+6. Normal yanıtlarında voice_call(action="speak") çağırma; düz metin ver, sistem zaten seslendirecek.
+7. Aramayı kapatmak için: voice_call(action="end_call", call_sid="{call_sid}", message="Görüşürüz!")
+8. Kısa ve net konuş - telefonda uzun cümleler zor anlaşılır.
 
 Şimdi kullanıcıya Türkçe yanıt ver:"""
 
@@ -202,12 +220,14 @@ Kullanıcı şunu söyledi: "{text}"
         self,
         to_number: str,
         telegram_chat_id: str | None = None,
+        greeting: str | None = None,
     ) -> str:
         """Initiate an outbound call.
 
         Args:
             to_number: Phone number to call
             telegram_chat_id: Optional Telegram chat ID for session linking
+            greeting: Optional greeting to speak when call is answered
 
         Returns:
             Call SID
@@ -216,6 +236,7 @@ Kullanıcı şunu söyledi: "{text}"
             to_number=to_number,
             call_manager=self.call_manager,
             telegram_chat_id=telegram_chat_id,
+            pending_greeting=greeting,
         )
 
     async def end_call(self, call_sid: str, message: str | None = None):
