@@ -2,6 +2,7 @@
 
 import os
 from typing import Any
+from loguru import logger
 
 import litellm
 from litellm import acompletion
@@ -25,6 +26,7 @@ class LiteLLMProvider(LLMProvider):
     ):
         super().__init__(api_key, api_base)
         self.default_model = default_model
+        self.request_timeout_seconds = float(os.getenv("FLOWLY_LLM_TIMEOUT_SECONDS", "45"))
         
         # Detect OpenRouter by api_key prefix or explicit api_base
         self.is_openrouter = (
@@ -109,6 +111,7 @@ class LiteLLMProvider(LLMProvider):
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
+            "timeout": self.request_timeout_seconds,
         }
 
         # Set app name for OpenRouter dashboard
@@ -130,25 +133,10 @@ class LiteLLMProvider(LLMProvider):
             kwargs["tool_choice"] = tool_choice
         
         try:
-            # Debug: Log what we're sending
-            import json as json_module
-            print(f"[LLM] Model: {model}, tool_choice: {tool_choice if tools else 'N/A'}, tools: {len(tools) if tools else 0}")
-
             response = await acompletion(**kwargs)
-
-            # Debug: Log raw response
-            choice = response.choices[0]
-            msg = choice.message
-            print(f"[LLM] Response: finish_reason={choice.finish_reason}, has_content={bool(msg.content)}, has_tool_calls={bool(getattr(msg, 'tool_calls', None))}")
-            if getattr(msg, 'tool_calls', None):
-                for tc in msg.tool_calls:
-                    print(f"[LLM]   Tool call: {tc.function.name}({tc.function.arguments[:100]}...)")
-
             return self._parse_response(response)
         except Exception as e:
-            import traceback
-            print(f"[LLM ERROR] {e}")
-            traceback.print_exc()
+            logger.error(f"LLM call error: {e}")
             # Return error as content for graceful handling
             return LLMResponse(
                 content=f"Error calling LLM: {str(e)}",

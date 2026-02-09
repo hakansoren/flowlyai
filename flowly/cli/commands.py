@@ -1,9 +1,17 @@
 """CLI commands for flowly."""
 
 import asyncio
+import os
 import platform
+import plistlib
+import shlex
 import shutil
 import signal
+import subprocess
+import sys
+import textwrap
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import typer
@@ -100,6 +108,813 @@ def setup_trello_cmd():
 
 
 # ============================================================================
+# Persona Commands
+# ============================================================================
+
+persona_app = typer.Typer(help="Manage bot persona")
+app.add_typer(persona_app, name="persona")
+
+BUILTIN_PERSONAS = ["default", "jarvis", "friday", "pirate", "samurai", "casual", "professor", "butler"]
+
+
+def _get_personas_dir() -> Path:
+    """Get the personas directory from workspace config."""
+    from flowly.config.loader import load_config
+    config = load_config()
+    return config.workspace_path / "personas"
+
+
+def _ensure_personas(workspace: Path) -> Path:
+    """Ensure personas directory exists, copying builtins if needed."""
+    personas_dir = workspace / "personas"
+    if not personas_dir.exists() or not any(personas_dir.glob("*.md")):
+        _install_persona_files(workspace)
+    return personas_dir
+
+
+@persona_app.command("list")
+def persona_list():
+    """List available personas."""
+    from flowly.config.loader import load_config
+    config = load_config()
+    personas_dir = _ensure_personas(config.workspace_path)
+    active = config.agents.defaults.persona
+
+    if not any(personas_dir.glob("*.md")):
+        console.print("[yellow]No persona files found.[/yellow]")
+        raise typer.Exit(1)
+
+    table = Table(title="Available Personas")
+    table.add_column("Name", style="cyan")
+    table.add_column("Active", justify="center")
+    table.add_column("Description", style="dim")
+
+    for md_file in sorted(personas_dir.glob("*.md")):
+        name = md_file.stem
+        is_active = "[green]✓[/green]" if name == active else ""
+        # Read first non-header line as description
+        desc = ""
+        for line in md_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                desc = line[:60]
+                break
+        table.add_row(name, is_active, desc)
+
+    console.print(table)
+
+
+@persona_app.command("set")
+def persona_set(
+    name: str = typer.Argument(help="Persona name to activate"),
+):
+    """Set the active persona."""
+    from flowly.config.loader import load_config, save_config
+    config = load_config()
+    personas_dir = config.workspace_path / "personas"
+    persona_file = personas_dir / f"{name}.md"
+
+    if not persona_file.exists():
+        console.print(f"[red]Persona not found: {name}[/red]")
+        available = [f.stem for f in personas_dir.glob("*.md")] if personas_dir.exists() else BUILTIN_PERSONAS
+        console.print(f"[dim]Available: {', '.join(available)}[/dim]")
+        raise typer.Exit(1)
+
+    config.agents.defaults.persona = name
+    save_config(config)
+    console.print(f"[green]✓[/green] Persona set to: [cyan]{name}[/cyan]")
+
+    # Auto-restart if gateway is running
+    ok, _ = _service_health(config.gateway.port)
+    if ok:
+        console.print("[dim]Restarting gateway...[/dim]")
+        try:
+            service_restart(label=DEFAULT_SERVICE_LABEL)
+        except (SystemExit, Exception):
+            console.print("[yellow]Could not auto-restart. Run: flowly service restart[/yellow]")
+
+
+@persona_app.command("show")
+def persona_show(
+    name: str = typer.Argument(help="Persona name to display"),
+):
+    """Show persona details."""
+    from flowly.config.loader import load_config
+    config = load_config()
+    persona_file = config.workspace_path / "personas" / f"{name}.md"
+
+    if not persona_file.exists():
+        console.print(f"[red]Persona not found: {name}[/red]")
+        raise typer.Exit(1)
+
+    content = persona_file.read_text(encoding="utf-8")
+    from rich.markdown import Markdown
+    console.print(Markdown(content))
+
+
+# ============================================================================
+# Service Commands
+# ============================================================================
+
+service_app = typer.Typer(help="Manage background gateway service")
+app.add_typer(service_app, name="service")
+
+DEFAULT_SERVICE_LABEL = "ai.flowly.gateway"
+
+
+def _resolve_flowly_exec_argv() -> list[str]:
+    """Resolve the executable argv prefix used for service definitions."""
+    flowly_bin = shutil.which("flowly")
+    if flowly_bin:
+        return [str(Path(flowly_bin).expanduser())]
+
+    argv0 = Path(sys.argv[0]).expanduser()
+    if argv0.exists() and argv0.name == "flowly":
+        return [str(argv0)]
+
+    local_bin = (Path.home() / ".local" / "bin" / "flowly").expanduser()
+    if local_bin.exists():
+        return [str(local_bin)]
+
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        return [str(Path(uv_bin).expanduser()), "run", "flowly"]
+
+    return ["flowly"]
+
+
+def _service_paths(label: str) -> tuple[Path | None, Path | None, Path | None]:
+    """Return service file paths for macOS/Linux/Windows."""
+    system = platform.system().lower()
+    if system == "darwin":
+        return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist", None, None
+    if system == "linux":
+        return None, Path.home() / ".config" / "systemd" / "user" / f"{label}.service", None
+    if system == "windows":
+        return None, None, Path.home() / "AppData" / "Local" / "flowly" / f"{label}.xml"
+    return None, None, None
+
+
+def _get_log_dir() -> Path:
+    """Return platform-appropriate log directory for gateway."""
+    system = platform.system().lower()
+    if system == "darwin":
+        return Path("/tmp")
+    if system == "windows":
+        log_dir = Path.home() / "AppData" / "Local" / "flowly" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        return log_dir
+    # Linux uses journalctl, but provide a fallback path
+    return Path("/tmp")
+
+
+def _run_cmd(args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
+    """Run command and return completed process with text output."""
+    proc = subprocess.run(args, capture_output=True, text=True)
+    if check and proc.returncode != 0:
+        stderr = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(f"{' '.join(args)} failed: {stderr}")
+    return proc
+
+
+def _service_health(port: int) -> tuple[bool, str]:
+    """Check local gateway health endpoint."""
+    url = f"http://127.0.0.1:{port}/health"
+    try:
+        with urllib.request.urlopen(url, timeout=2.0) as resp:
+            if 200 <= int(resp.status) < 300:
+                return True, f"{url} OK"
+            return False, f"{url} HTTP {resp.status}"
+    except urllib.error.URLError as e:
+        return False, f"{url} unavailable ({e.reason})"
+    except Exception as e:
+        return False, f"{url} unavailable ({e})"
+
+
+def _kill_gateway_on_port(port: int, wait: float = 2.0) -> bool:
+    """Kill any process listening on the gateway port. Returns True if killed."""
+    system = platform.system().lower()
+    try:
+        if system == "darwin" or system == "linux":
+            result = subprocess.run(
+                ["lsof", "-ti", f":{port}", "-sTCP:LISTEN"],
+                capture_output=True, text=True, timeout=5,
+            )
+            pids = [int(p) for p in result.stdout.strip().split("\n") if p.strip()]
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            if pids:
+                import time
+                time.sleep(wait)
+                # SIGKILL any survivors
+                for pid in pids:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                return True
+        elif system == "windows":
+            result = subprocess.run(
+                ["netstat", "-ano"], capture_output=True, text=True, timeout=5,
+            )
+            for line in result.stdout.splitlines():
+                if f":{port}" in line and "LISTENING" in line:
+                    pid = int(line.strip().split()[-1])
+                    subprocess.run(
+                        ["taskkill", "/pid", str(pid), "/T", "/F"],
+                        capture_output=True, timeout=5,
+                    )
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _extract_port_from_plist(plist_path: Path) -> int:
+    if not plist_path.exists():
+        return 18790
+    try:
+        raw = plist_path.read_bytes()
+        data = plistlib.loads(raw)
+        args = data.get("ProgramArguments", [])
+        if "--port" in args:
+            idx = args.index("--port")
+            if idx + 1 < len(args):
+                return int(args[idx + 1])
+    except Exception:
+        pass
+    return 18790
+
+
+def _extract_port_from_unit(unit_path: Path) -> int:
+    if not unit_path.exists():
+        return 18790
+    try:
+        content = unit_path.read_text(encoding="utf-8")
+    except Exception:
+        return 18790
+    marker = "--port"
+    if marker not in content:
+        return 18790
+    try:
+        after = content.split(marker, 1)[1].strip()
+        return int(after.split()[0])
+    except Exception:
+        return 18790
+
+
+def _extract_port_from_win_xml(xml_path: Path) -> int:
+    """Extract --port value from Windows Task Scheduler XML."""
+    if not xml_path.exists():
+        return 18790
+    try:
+        content = xml_path.read_text(encoding="utf-16")
+    except Exception:
+        return 18790
+    marker = "--port"
+    if marker not in content:
+        return 18790
+    try:
+        after = content.split(marker, 1)[1].strip()
+        return int(after.split()[0].strip('"').strip("'"))
+    except Exception:
+        return 18790
+
+
+@service_app.command("install")
+def service_install(
+    label: str = typer.Option(DEFAULT_SERVICE_LABEL, "--label", help="Service label"),
+    port: int = typer.Option(18790, "--port", "-p", help="Gateway port"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable gateway verbose mode"),
+    start: bool = typer.Option(True, "--start/--no-start", help="Start service after install"),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing service file"),
+    persona: str = typer.Option("", "--persona", help="Bot persona (default, jarvis, pirate, samurai, casual, professor, butler, friday)"),
+):
+    """Install background service for flowly gateway."""
+    mac_plist, linux_unit, win_xml = _service_paths(label)
+    exec_argv = _resolve_flowly_exec_argv()
+    system = platform.system().lower()
+
+    if system == "darwin" and mac_plist:
+        mac_plist.parent.mkdir(parents=True, exist_ok=True)
+        if mac_plist.exists() and not force:
+            console.print(f"[yellow]Service file exists: {mac_plist}[/yellow]")
+            console.print("[dim]Use --force to overwrite.[/dim]")
+            raise typer.Exit(1)
+
+        argv = exec_argv + ["gateway", "--port", str(port)]
+        if verbose:
+            argv.append("--verbose")
+        if persona:
+            argv.extend(["--persona", persona])
+        plist_obj = {
+            "Label": label,
+            "ProgramArguments": argv,
+            "RunAtLoad": True,
+            "KeepAlive": True,
+            "LimitLoadToSessionType": "Aqua",
+            "ProcessType": "Interactive",
+            "WorkingDirectory": str(Path.cwd()),
+            "StandardOutPath": str(_get_log_dir() / "flowly-gateway.out.log"),
+            "StandardErrorPath": str(_get_log_dir() / "flowly-gateway.err.log"),
+            "EnvironmentVariables": {
+                "PATH": os.environ.get("PATH", ""),
+                "PYTHONUNBUFFERED": "1",
+            },
+        }
+        mac_plist.write_bytes(plistlib.dumps(plist_obj, fmt=plistlib.FMT_XML, sort_keys=False))
+
+        try:
+            _run_cmd(["launchctl", "unload", str(mac_plist)], check=False)
+            _run_cmd(["launchctl", "load", str(mac_plist)])
+            if start:
+                _run_cmd(["launchctl", "start", label], check=False)
+        except Exception as e:
+            console.print(f"[red]Service install failed: {e}[/red]")
+            raise typer.Exit(1)
+
+        console.print(f"[green]✓[/green] Installed launchd service: {label}")
+        console.print(f"[dim]File: {mac_plist}[/dim]")
+        return
+
+    if system == "linux" and linux_unit:
+        linux_unit.parent.mkdir(parents=True, exist_ok=True)
+        if linux_unit.exists() and not force:
+            console.print(f"[yellow]Service file exists: {linux_unit}[/yellow]")
+            console.print("[dim]Use --force to overwrite.[/dim]")
+            raise typer.Exit(1)
+
+        argv = exec_argv + ["gateway", "--port", str(port)]
+        if verbose:
+            argv.append("--verbose")
+        if persona:
+            argv.extend(["--persona", persona])
+        exec_line = shlex.join(argv)
+        unit_content = textwrap.dedent(
+            f"""\
+            [Unit]
+            Description=Flowly Gateway Service
+            After=network.target
+
+            [Service]
+            Type=simple
+            ExecStart={exec_line}
+            Restart=always
+            RestartSec=3
+            WorkingDirectory={Path.cwd()}
+            Environment=PYTHONUNBUFFERED=1
+
+            [Install]
+            WantedBy=default.target
+            """
+        )
+        linux_unit.write_text(unit_content, encoding="utf-8")
+
+        try:
+            _run_cmd(["systemctl", "--user", "daemon-reload"])
+            _run_cmd(["systemctl", "--user", "enable", label])
+            if start:
+                _run_cmd(["systemctl", "--user", "restart", label])
+        except Exception as e:
+            console.print(f"[red]Service install failed: {e}[/red]")
+            console.print("[dim]Tip: Ensure user systemd is available (login session).[/dim]")
+            raise typer.Exit(1)
+
+        console.print(f"[green]✓[/green] Installed systemd user service: {label}")
+        console.print(f"[dim]File: {linux_unit}[/dim]")
+        return
+
+    if system == "windows" and win_xml:
+        win_xml.parent.mkdir(parents=True, exist_ok=True)
+        if win_xml.exists() and not force:
+            console.print(f"[yellow]Service file exists: {win_xml}[/yellow]")
+            console.print("[dim]Use --force to overwrite.[/dim]")
+            raise typer.Exit(1)
+
+        log_dir = _get_log_dir()
+        argv = exec_argv + ["gateway", "--port", str(port)]
+        if verbose:
+            argv.append("--verbose")
+        if persona:
+            argv.extend(["--persona", persona])
+
+        command = argv[0]
+        arguments = " ".join(argv[1:]) if len(argv) > 1 else ""
+        out_log = str(log_dir / "flowly-gateway.out.log")
+        err_log = str(log_dir / "flowly-gateway.err.log")
+
+        # Use cmd /c wrapper to redirect stdout/stderr to log files
+        wrapper_args = f'/c "{command}" {arguments} > "{out_log}" 2> "{err_log}"'
+
+        task_xml = textwrap.dedent(
+            f"""\
+            <?xml version="1.0" encoding="UTF-16"?>
+            <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+              <RegistrationInfo>
+                <Description>Flowly Gateway Service</Description>
+              </RegistrationInfo>
+              <Triggers>
+                <LogonTrigger>
+                  <Enabled>true</Enabled>
+                </LogonTrigger>
+              </Triggers>
+              <Principals>
+                <Principal id="Author">
+                  <LogonType>InteractiveToken</LogonType>
+                  <RunLevel>LeastPrivilege</RunLevel>
+                </Principal>
+              </Principals>
+              <Settings>
+                <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+                <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+                <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+                <AllowHardTerminate>true</AllowHardTerminate>
+                <StartWhenAvailable>true</StartWhenAvailable>
+                <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+                <AllowStartOnDemand>true</AllowStartOnDemand>
+                <Enabled>true</Enabled>
+                <Hidden>false</Hidden>
+                <RestartOnFailure>
+                  <Interval>PT3S</Interval>
+                  <Count>10</Count>
+                </RestartOnFailure>
+                <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+              </Settings>
+              <Actions Context="Author">
+                <Exec>
+                  <Command>cmd.exe</Command>
+                  <Arguments>{wrapper_args}</Arguments>
+                  <WorkingDirectory>{Path.cwd()}</WorkingDirectory>
+                </Exec>
+              </Actions>
+            </Task>
+            """
+        )
+        win_xml.write_text(task_xml, encoding="utf-16")
+
+        try:
+            _run_cmd(["schtasks", "/create", "/tn", label, "/xml", str(win_xml), "/f"])
+            if start:
+                _run_cmd(["schtasks", "/run", "/tn", label], check=False)
+        except Exception as e:
+            console.print(f"[red]Service install failed: {e}[/red]")
+            console.print("[dim]Tip: You may need to run as Administrator.[/dim]")
+            raise typer.Exit(1)
+
+        console.print(f"[green]✓[/green] Installed Windows Task Scheduler service: {label}")
+        console.print(f"[dim]File: {win_xml}[/dim]")
+        return
+
+    console.print(f"[red]Unsupported platform for service install: {platform.system()}[/red]")
+    raise typer.Exit(1)
+
+
+@service_app.command("start")
+def service_start(
+    label: str = typer.Option(DEFAULT_SERVICE_LABEL, "--label", help="Service label"),
+):
+    """Start installed background service."""
+    mac_plist, linux_unit, win_xml = _service_paths(label)
+    system = platform.system().lower()
+    try:
+        if system == "darwin" and mac_plist:
+            if not mac_plist.exists():
+                console.print(f"[red]Service not installed: {mac_plist}[/red]")
+                raise typer.Exit(1)
+            _run_cmd(["launchctl", "load", str(mac_plist)], check=False)
+            _run_cmd(["launchctl", "start", label], check=False)
+            console.print(f"[green]✓[/green] Started service {label}")
+            return
+        if system == "linux":
+            _run_cmd(["systemctl", "--user", "start", label])
+            console.print(f"[green]✓[/green] Started service {label}")
+            return
+        if system == "windows":
+            _run_cmd(["schtasks", "/run", "/tn", label])
+            console.print(f"[green]✓[/green] Started service {label}")
+            return
+    except Exception as e:
+        console.print(f"[red]Failed to start service: {e}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[red]Unsupported platform: {platform.system()}[/red]")
+    raise typer.Exit(1)
+
+
+@service_app.command("stop")
+def service_stop(
+    label: str = typer.Option(DEFAULT_SERVICE_LABEL, "--label", help="Service label"),
+):
+    """Stop background service."""
+    mac_plist, linux_unit, win_xml = _service_paths(label)
+    system = platform.system().lower()
+
+    # Determine the port so we can force-kill if needed
+    port = 18790
+    if system == "darwin" and mac_plist:
+        port = _extract_port_from_plist(mac_plist)
+    elif system == "linux" and linux_unit:
+        port = _extract_port_from_unit(linux_unit)
+    elif system == "windows" and win_xml:
+        port = _extract_port_from_win_xml(win_xml)
+
+    try:
+        if system == "darwin" and mac_plist:
+            _run_cmd(["launchctl", "stop", label], check=False)
+            _run_cmd(["launchctl", "unload", str(mac_plist)], check=False)
+        elif system == "linux":
+            _run_cmd(["systemctl", "--user", "stop", label], check=False)
+        elif system == "windows":
+            _run_cmd(["schtasks", "/end", "/tn", label], check=False)
+        else:
+            console.print(f"[red]Unsupported platform: {platform.system()}[/red]")
+            raise typer.Exit(1)
+
+        # Force-kill any remaining process on the port
+        _kill_gateway_on_port(port)
+        console.print(f"[green]✓[/green] Stopped service {label}")
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"[red]Failed to stop service: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@service_app.command("restart")
+def service_restart(
+    label: str = typer.Option(DEFAULT_SERVICE_LABEL, "--label", help="Service label"),
+):
+    """Restart background service."""
+    system = platform.system().lower()
+    try:
+        if system == "darwin":
+            service_stop(label=label)
+            service_start(label=label)
+            return
+        if system == "linux":
+            _run_cmd(["systemctl", "--user", "restart", label])
+            console.print(f"[green]✓[/green] Restarted service {label}")
+            return
+        if system == "windows":
+            service_stop(label=label)
+            service_start(label=label)
+            return
+    except Exception as e:
+        console.print(f"[red]Failed to restart service: {e}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[red]Unsupported platform: {platform.system()}[/red]")
+    raise typer.Exit(1)
+
+
+@service_app.command("status")
+def service_status(
+    label: str = typer.Option(DEFAULT_SERVICE_LABEL, "--label", help="Service label"),
+):
+    """Show service state and local health."""
+    mac_plist, linux_unit, win_xml = _service_paths(label)
+    system = platform.system().lower()
+
+    if system == "darwin" and mac_plist:
+        installed = mac_plist.exists()
+        loaded = False
+        pid = ""
+        try:
+            proc = _run_cmd(["launchctl", "list", label], check=False)
+            loaded = proc.returncode == 0
+            output = proc.stdout or ""
+            for line in output.splitlines():
+                if "pid" in line.lower():
+                    pid = line.strip()
+                    break
+        except Exception:
+            loaded = False
+        port = _extract_port_from_plist(mac_plist)
+        ok, health = _service_health(port)
+        console.print(f"Service: [cyan]{label}[/cyan]")
+        console.print(f"Installed: {'[green]yes[/green]' if installed else '[red]no[/red]'}")
+        console.print(f"Loaded: {'[green]yes[/green]' if loaded else '[red]no[/red]'}")
+        if pid:
+            console.print(f"PID info: [dim]{pid}[/dim]")
+        console.print(f"Health: {'[green]ok[/green]' if ok else '[yellow]down[/yellow]'} - {health}")
+        if installed:
+            console.print(f"[dim]File: {mac_plist}[/dim]")
+        return
+
+    if system == "linux" and linux_unit:
+        installed = linux_unit.exists()
+        enabled = False
+        active = False
+        try:
+            enabled = _run_cmd(["systemctl", "--user", "is-enabled", label], check=False).returncode == 0
+            active = _run_cmd(["systemctl", "--user", "is-active", label], check=False).returncode == 0
+        except Exception:
+            pass
+        port = _extract_port_from_unit(linux_unit)
+        ok, health = _service_health(port)
+        console.print(f"Service: [cyan]{label}[/cyan]")
+        console.print(f"Installed: {'[green]yes[/green]' if installed else '[red]no[/red]'}")
+        console.print(f"Enabled: {'[green]yes[/green]' if enabled else '[red]no[/red]'}")
+        console.print(f"Active: {'[green]yes[/green]' if active else '[red]no[/red]'}")
+        console.print(f"Health: {'[green]ok[/green]' if ok else '[yellow]down[/yellow]'} - {health}")
+        if installed:
+            console.print(f"[dim]File: {linux_unit}[/dim]")
+        return
+
+    if system == "windows" and win_xml:
+        installed = win_xml.exists()
+        running = False
+        status_text = "Unknown"
+        try:
+            proc = _run_cmd(
+                ["schtasks", "/query", "/tn", label, "/fo", "CSV", "/nh"],
+                check=False,
+            )
+            if proc.returncode == 0 and proc.stdout:
+                # CSV format: "task_name","Next Run","Status"
+                parts = proc.stdout.strip().split(",")
+                if len(parts) >= 3:
+                    status_text = parts[2].strip().strip('"')
+                    running = status_text.lower() == "running"
+        except Exception:
+            pass
+        port = _extract_port_from_win_xml(win_xml)
+        ok, health = _service_health(port)
+        console.print(f"Service: [cyan]{label}[/cyan]")
+        console.print(f"Installed: {'[green]yes[/green]' if installed else '[red]no[/red]'}")
+        console.print(f"Status: {'[green]Running[/green]' if running else f'[yellow]{status_text}[/yellow]'}")
+        console.print(f"Health: {'[green]ok[/green]' if ok else '[yellow]down[/yellow]'} - {health}")
+        if installed:
+            console.print(f"[dim]File: {win_xml}[/dim]")
+        return
+
+    console.print(f"[red]Unsupported platform: {platform.system()}[/red]")
+    raise typer.Exit(1)
+
+
+@service_app.command("logs")
+def service_logs(
+    label: str = typer.Option(DEFAULT_SERVICE_LABEL, "--label", help="Service label"),
+    follow: bool = typer.Option(True, "--follow/--no-follow", "-f", help="Follow logs in real time"),
+    lines: int = typer.Option(200, "--lines", "-n", min=1, help="Number of lines to show"),
+    stream: str = typer.Option(
+        "both",
+        "--stream",
+        help="Log stream (macOS launchd logs only): out|err|both",
+    ),
+):
+    """Show background service logs (real-time by default)."""
+    system = platform.system().lower()
+
+    if system == "darwin":
+        stream = stream.lower().strip()
+        if stream not in {"out", "err", "both"}:
+            console.print("[red]Invalid --stream value. Use out, err, or both.[/red]")
+            raise typer.Exit(1)
+
+        log_dir = _get_log_dir()
+        out_log = log_dir / "flowly-gateway.out.log"
+        err_log = log_dir / "flowly-gateway.err.log"
+        selected_files: list[Path] = []
+        if stream in {"out", "both"}:
+            selected_files.append(out_log)
+        if stream in {"err", "both"}:
+            selected_files.append(err_log)
+
+        existing_files = [p for p in selected_files if p.exists()]
+        missing_files = [p for p in selected_files if not p.exists()]
+        for missing in missing_files:
+            console.print(f"[yellow]Log file not found yet:[/yellow] {missing}")
+
+        if not existing_files:
+            console.print("[red]No log file available yet.[/red]")
+            raise typer.Exit(1)
+
+        if follow:
+            console.print(
+                f"[dim]Following logs ({', '.join(str(p) for p in existing_files)}). "
+                "Press Ctrl+C to stop.[/dim]"
+            )
+            try:
+                subprocess.run(
+                    ["tail", "-n", str(lines), "-F", *[str(p) for p in existing_files]],
+                    check=False,
+                )
+            except KeyboardInterrupt:
+                return
+            return
+
+        for file_path in existing_files:
+            console.print(f"\n[bold]{file_path}[/bold]")
+            proc = _run_cmd(["tail", "-n", str(lines), str(file_path)], check=False)
+            if proc.stdout:
+                console.print(proc.stdout.rstrip("\n"))
+        return
+
+    if system == "linux":
+        args = ["journalctl", "--user", "-u", label, "-n", str(lines), "--no-pager"]
+        if follow:
+            args.append("-f")
+            console.print(f"[dim]Following journal logs for {label}. Press Ctrl+C to stop.[/dim]")
+        proc = _run_cmd(args, check=False)
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip()
+            console.print(f"[red]Failed to read logs: {err}[/red]")
+            raise typer.Exit(1)
+        if proc.stdout:
+            console.print(proc.stdout.rstrip("\n"))
+        return
+
+    if system == "windows":
+        log_dir = _get_log_dir()
+        out_log = log_dir / "flowly-gateway.out.log"
+        err_log = log_dir / "flowly-gateway.err.log"
+        selected_files: list[Path] = []
+        if stream in {"out", "both"}:
+            selected_files.append(out_log)
+        if stream in {"err", "both"}:
+            selected_files.append(err_log)
+
+        existing_files = [p for p in selected_files if p.exists()]
+        missing_files = [p for p in selected_files if not p.exists()]
+        for missing in missing_files:
+            console.print(f"[yellow]Log file not found yet:[/yellow] {missing}")
+
+        if not existing_files:
+            console.print("[red]No log file available yet.[/red]")
+            raise typer.Exit(1)
+
+        if follow:
+            console.print(
+                f"[dim]Following logs ({', '.join(str(p) for p in existing_files)}). "
+                "Press Ctrl+C to stop.[/dim]"
+            )
+            # Use PowerShell Get-Content -Wait for tail -f equivalent on Windows
+            ps_files = ", ".join(f'"{p}"' for p in existing_files)
+            ps_cmd = f"Get-Content -Path {ps_files} -Tail {lines} -Wait"
+            try:
+                subprocess.run(
+                    ["powershell", "-Command", ps_cmd],
+                    check=False,
+                )
+            except KeyboardInterrupt:
+                return
+            return
+
+        # Read last N lines using PowerShell
+        for file_path in existing_files:
+            console.print(f"\n[bold]{file_path}[/bold]")
+            ps_cmd = f'Get-Content -Path "{file_path}" -Tail {lines}'
+            proc = _run_cmd(["powershell", "-Command", ps_cmd], check=False)
+            if proc.stdout:
+                console.print(proc.stdout.rstrip("\n"))
+        return
+
+    console.print(f"[red]Unsupported platform: {platform.system()}[/red]")
+    raise typer.Exit(1)
+
+
+@service_app.command("uninstall")
+def service_uninstall(
+    label: str = typer.Option(DEFAULT_SERVICE_LABEL, "--label", help="Service label"),
+):
+    """Uninstall background service definition."""
+    mac_plist, linux_unit, win_xml = _service_paths(label)
+    system = platform.system().lower()
+
+    try:
+        if system == "darwin" and mac_plist:
+            _run_cmd(["launchctl", "stop", label], check=False)
+            _run_cmd(["launchctl", "unload", str(mac_plist)], check=False)
+            if mac_plist.exists():
+                mac_plist.unlink()
+            console.print(f"[green]✓[/green] Uninstalled service {label}")
+            return
+        if system == "linux" and linux_unit:
+            _run_cmd(["systemctl", "--user", "stop", label], check=False)
+            _run_cmd(["systemctl", "--user", "disable", label], check=False)
+            if linux_unit.exists():
+                linux_unit.unlink()
+            _run_cmd(["systemctl", "--user", "daemon-reload"], check=False)
+            console.print(f"[green]✓[/green] Uninstalled service {label}")
+            return
+        if system == "windows" and win_xml:
+            _run_cmd(["schtasks", "/end", "/tn", label], check=False)
+            _run_cmd(["schtasks", "/delete", "/tn", label, "/f"], check=False)
+            if win_xml.exists():
+                win_xml.unlink()
+            console.print(f"[green]✓[/green] Uninstalled service {label}")
+            return
+    except Exception as e:
+        console.print(f"[red]Failed to uninstall service: {e}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[red]Unsupported platform: {platform.system()}[/red]")
+    raise typer.Exit(1)
+
+
+# ============================================================================
 # Onboard / Setup
 # ============================================================================
 
@@ -130,12 +945,37 @@ def onboard():
     # Create default bootstrap files
     _create_workspace_templates(workspace)
 
+    # Copy builtin persona files to workspace
+    _install_persona_files(workspace)
+
+    # Persona selection
+    console.print("\n[bold cyan]Choose a persona for your bot:[/bold cyan]")
+    personas_dir = workspace / "personas"
+    if personas_dir.exists():
+        choices = [f.stem for f in sorted(personas_dir.glob("*.md"))]
+        for i, name in enumerate(choices, 1):
+            marker = " [green](default)[/green]" if name == "default" else ""
+            console.print(f"  {i}. [cyan]{name}[/cyan]{marker}")
+        choice = typer.prompt("Select persona number", default="1")
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(choices):
+                selected = choices[idx]
+                config.agents.defaults.persona = selected
+                save_config(config)
+                console.print(f"[green]✓[/green] Persona set to: [cyan]{selected}[/cyan]")
+            else:
+                console.print("[dim]Using default persona.[/dim]")
+        except ValueError:
+            console.print("[dim]Using default persona.[/dim]")
+
     console.print(f"\n{__logo__} flowly is ready!")
     console.print("\nNext steps:")
     console.print("  1. Add your API key to [cyan]~/.flowly/config.json[/cyan]")
     console.print("     Get one at: https://openrouter.ai/keys")
     console.print("  2. Chat: [cyan]flowly agent -m \"Hello!\"[/cyan]")
     console.print("\n[dim]Want Telegram/WhatsApp? Run: flowly channels login[/dim]")
+    console.print("[dim]Change persona later: flowly persona set <name>[/dim]")
 
 
 
@@ -212,6 +1052,35 @@ This file stores important information that should persist across sessions.
         console.print("  [dim]Created memory/MEMORY.md[/dim]")
 
 
+def _install_persona_files(workspace: Path):
+    """Copy builtin persona files to workspace/personas/ directory."""
+    personas_dir = workspace / "personas"
+    personas_dir.mkdir(exist_ok=True)
+
+    # Builtin personas are shipped in the package's workspace/personas/ directory
+    builtin_dir = Path(__file__).parent.parent.parent / "workspace" / "personas"
+    if builtin_dir.exists():
+        for src in builtin_dir.glob("*.md"):
+            dst = personas_dir / src.name
+            if not dst.exists():
+                dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+                console.print(f"  [dim]Created personas/{src.name}[/dim]")
+    else:
+        # Fallback: create a minimal default persona
+        default_file = personas_dir / "default.md"
+        if not default_file.exists():
+            default_file.write_text(
+                "# Persona: Flowly\n\n"
+                "You are Flowly, a helpful AI assistant.\n\n"
+                "## Personality\n\n"
+                "- Helpful and friendly\n"
+                "- Concise and to the point\n"
+                "- Curious and eager to learn\n",
+                encoding="utf-8",
+            )
+            console.print("  [dim]Created personas/default.md[/dim]")
+
+
 # ============================================================================
 # Gateway / Server
 # ============================================================================
@@ -221,6 +1090,7 @@ This file stores important information that should persist across sessions.
 def gateway(
     port: int = typer.Option(18790, "--port", "-p", help="Gateway port"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+    persona: str = typer.Option("", "--persona", help="Bot persona (default, jarvis, pirate, samurai, casual, professor, butler, friday)"),
 ):
     """Start the flowly gateway."""
     from flowly.config.loader import load_config, get_data_dir
@@ -242,6 +1112,11 @@ def gateway(
     console.print(f"Starting gateway on port {port}...")
 
     config = load_config()
+
+    # Resolve persona: CLI flag overrides config
+    active_persona = persona if persona else config.agents.defaults.persona
+    if active_persona:
+        console.print(f"[dim]Persona: {active_persona}[/dim]")
 
     # Create components
     bus = MessageBus()
@@ -299,7 +1174,6 @@ def gateway(
         provider=provider,
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
-        action_model=config.agents.defaults.action_model,
         action_temperature=config.agents.defaults.action_temperature,
         action_tool_retries=config.agents.defaults.action_tool_retries,
         max_iterations=config.agents.defaults.max_tool_iterations,
@@ -310,6 +1184,7 @@ def gateway(
         exec_config=exec_config,
         trello_config=config.integrations.trello,
         voice_config=config.integrations.voice,
+        persona=active_persona,
     )
 
     # Set cron job callback (needs agent to be created first)
@@ -392,7 +1267,10 @@ def gateway(
 
     channels.set_compact_callback(on_compact)
 
-    # Create gateway API server for voice bridge
+    # Legacy bridge fallback (disabled by default; integrated Python plugin is official path)
+    legacy_voice_bridge_enabled = bool(config.integrations.voice.legacy_bridge_enabled)
+
+    # Create gateway API callback for legacy voice bridge
     async def on_voice_message(call_sid: str, from_number: str, text: str) -> str:
         """Handle voice message from voice bridge."""
         # Use Telegram session if configured, otherwise use voice-specific session
@@ -412,7 +1290,7 @@ Kullanıcı şunu söyledi: "{text}"
 ÖNEMLİ KURALLAR:
 1. TÜRKÇE KONUŞ - Kullanıcı Türkçe konuşuyor, sen de Türkçe yanıt ver.
 2. Bu bir telefon görüşmesi - kullanıcı sadece senin söylediklerini duyuyor.
-3. Tool kullanabilirsin (screenshot, exec, web_search, cron vb.) - kullan ve sonucu söyle.
+3. Gerekirse yalnızca güvenli tool setini kullan (voice_call end/list, screenshot, message, system).
 4. Screenshot alırsan otomatik Telegram'a gider, kullanıcıya "ekran görüntüsünü Telegram'a gönderdim" de.
 5. Aramayı kapatmak için: voice_call(action="end_call", call_sid="{call_sid}", message="Görüşürüz!")
 6. Kısa ve net konuş - telefonda uzun cümleler zor anlaşılır.
@@ -424,7 +1302,7 @@ Kullanıcı şunu söyledi: "{text}"
     gateway_server = GatewayServer(
         host=config.gateway.host,
         port=port,
-        on_voice_message=on_voice_message,
+        on_voice_message=on_voice_message if legacy_voice_bridge_enabled else None,
     )
 
     if channels.enabled_channels:
@@ -437,6 +1315,8 @@ Kullanıcı şunu söyledi: "{text}"
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
 
     console.print(f"[green]✓[/green] Heartbeat: every 30m")
+    if legacy_voice_bridge_enabled:
+        console.print("[yellow]⚠[/yellow] Legacy voice bridge fallback enabled")
 
     # Initialize voice plugin if enabled
     voice_plugin = None
@@ -448,7 +1328,7 @@ Kullanıcı şunu söyledi: "{text}"
                 voice_plugin = VoicePlugin(config, agent)
                 # Connect voice plugin to agent's voice tool
                 agent.set_voice_plugin(voice_plugin)
-                console.print(f"[green]✓[/green] Voice calls: integrated (webhook port: 8765)")
+                console.print(f"[green]✓[/green] Voice calls: initializing...")
             except Exception as e:
                 console.print(f"[yellow]Warning: Voice plugin failed to initialize: {e}[/yellow]")
         else:
@@ -463,9 +1343,14 @@ Kullanıcı şunu söyledi: "{text}"
             console.print("\n[yellow]Shutting down...[/yellow]")
             shutdown_event.set()
 
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, signal_handler)
+        if platform.system() == "Windows":
+            # Windows asyncio doesn't support loop.add_signal_handler
+            signal.signal(signal.SIGINT, lambda s, f: signal_handler())
+            signal.signal(signal.SIGTERM, lambda s, f: signal_handler())
+        else:
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, signal_handler)
 
         try:
             await gateway_server.start()
@@ -475,6 +1360,10 @@ Kullanıcı şunu söyledi: "{text}"
             # Start voice plugin if available
             if voice_plugin:
                 await voice_plugin.start(host="0.0.0.0", port=8765)
+                if voice_plugin._ngrok_tunnel:
+                    console.print(f"[green]✓[/green] Voice calls: ngrok tunnel ({voice_plugin._webhook_base_url})")
+                else:
+                    console.print(f"[green]✓[/green] Voice calls: integrated ({voice_plugin._webhook_base_url})")
 
             # Run until shutdown signal
             async def run_until_shutdown():
@@ -587,7 +1476,6 @@ def agent(
         provider=provider,
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
-        action_model=config.agents.defaults.action_model,
         action_temperature=config.agents.defaults.action_temperature,
         action_tool_retries=config.agents.defaults.action_tool_retries,
         brave_api_key=config.tools.web.search.api_key or None,
@@ -597,6 +1485,7 @@ def agent(
         exec_config=exec_config,
         trello_config=config.integrations.trello,
         voice_config=config.integrations.voice,
+        persona=config.agents.defaults.persona,
     )
 
     async def handle_compact(instructions: str | None = None) -> None:

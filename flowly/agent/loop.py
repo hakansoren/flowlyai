@@ -4,6 +4,7 @@ import asyncio
 import copy
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,6 @@ from flowly.providers.base import LLMProvider
 from flowly.agent.context import ContextBuilder
 from flowly.agent.tools.registry import ToolRegistry
 from flowly.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
-from flowly.agent.tools.shell import ExecTool
 from flowly.agent.tools.web import WebSearchTool, WebFetchTool
 from flowly.agent.tools.message import MessageTool
 from flowly.agent.tools.screenshot import ScreenshotTool
@@ -53,7 +53,6 @@ class AgentLoop:
         provider: LLMProvider,
         workspace: Path,
         model: str | None = None,
-        action_model: str | None = None,
         action_temperature: float = 0.1,
         action_tool_retries: int = 2,
         max_iterations: int = 20,
@@ -64,12 +63,12 @@ class AgentLoop:
         exec_config: ExecConfig | None = None,
         trello_config: TrelloConfig | None = None,
         voice_config: VoiceBridgeConfig | None = None,
+        persona: str = "default",
     ):
         self.bus = bus
         self.provider = provider
         self.workspace = workspace
         self.model = model or provider.get_default_model()
-        self.action_model = action_model
         self.action_temperature = action_temperature
         self.action_tool_retries = max(0, action_tool_retries)
         self.max_iterations = max_iterations
@@ -77,7 +76,7 @@ class AgentLoop:
         self.cron_service = cron_service
         self.context_messages = context_messages
 
-        self.context = ContextBuilder(workspace)
+        self.context = ContextBuilder(workspace, persona=persona)
         self.sessions = SessionManager(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
@@ -103,6 +102,14 @@ class AgentLoop:
 
         # Voice config
         self.voice_config = voice_config
+        self._live_call_default_allow_tools = {"voice_call", "message", "screenshot", "system"}
+        configured_allow = []
+        if self.voice_config and self.voice_config.live_call and self.voice_config.live_call.allow_tools:
+            configured_allow = [tool.strip() for tool in self.voice_config.live_call.allow_tools if tool]
+        self._live_call_allow_tools = set(configured_allow) or set(self._live_call_default_allow_tools)
+        self._live_call_strict_tool_sandbox = bool(
+            self.voice_config and self.voice_config.live_call.strict_tool_sandbox
+        ) if self.voice_config else True
 
         self._running = False
         self._register_default_tools()
@@ -244,7 +251,15 @@ class AgentLoop:
         action_patterns = (
             r"\barasana\b",
             r"\barar\s+m[ıi]s[ıi]n\b",
-            r"\bara\b",
+            r"\btekrar\s+dene\b",
+            r"\btekrar\s+b[iı]\s+dene\b",
+            r"\btekrar\s+bir\s+dene\b",
+            r"\btekrar\s+dener\s+m[ıi]s[ıi]n\b",
+            r"\btekrar\b.*\bden\w+\b",
+            r"\byeniden\s+dene\b",
+            r"\bbir\s+daha\s+dene\b",
+            r"\btry\s+again\b",
+            r"\bretry\b",
             r"\baray[ıi]p\b",
             r"\barama\b",
             r"\btelefon(?:la)?\b",
@@ -267,6 +282,165 @@ class AgentLoop:
         )
         return any(re.search(pattern, intent_text) for pattern in action_patterns)
 
+    def _is_retry_action_followup(self, content: str) -> bool:
+        """Detect short follow-up prompts that usually mean 'retry previous action'."""
+        intent_text = self._extract_action_intent_text(content)
+        retry_patterns = (
+            r"\btekrar\s+dene\b",
+            r"\btekrar\s+b[iı]\s+dene\b",
+            r"\btekrar\s+bir\s+dene\b",
+            r"\btekrar\s+dener\s+m[ıi]s[ıi]n\b",
+            r"\btekrar\b.*\bden\w+\b",
+            r"\byeniden\s+dene\b",
+            r"\bbir\s+daha\s+dene\b",
+            r"\btry\s+again\b",
+            r"\bretry\b",
+        )
+        return any(re.search(pattern, intent_text) for pattern in retry_patterns)
+
+    def _is_cancel_action_followup(self, content: str) -> bool:
+        """Detect explicit cancellation for pending actions."""
+        intent_text = self._extract_action_intent_text(content)
+        cancel_patterns = (
+            r"\bvazge[cç]\b",
+            r"\biptal\b",
+            r"\bbo[sş]ver\b",
+            r"\bforget\s+it\b",
+            r"\bcancel\b",
+            r"\bstop\b",
+        )
+        return any(re.search(pattern, intent_text) for pattern in cancel_patterns)
+
+    def _consume_pending_action_lock(self, session: Any, content: str) -> bool:
+        """
+        Consume a pending-action lock set by a previous failed action turn.
+
+        If active, force this turn into action mode unless user explicitly cancels.
+        """
+        pending = session.metadata.get("pending_action_lock")
+        if not isinstance(pending, dict):
+            return False
+        if not pending.get("active"):
+            return False
+
+        remaining = int(pending.get("remaining_turns", 0) or 0)
+        if remaining <= 0:
+            session.metadata.pop("pending_action_lock", None)
+            return False
+
+        if self._is_cancel_action_followup(content):
+            session.metadata.pop("pending_action_lock", None)
+            return False
+
+        pending["remaining_turns"] = remaining - 1
+        pending["last_consumed_at"] = datetime.now().isoformat()
+        session.metadata["pending_action_lock"] = pending
+        return True
+
+    def _set_pending_action_lock(self, session: Any, request_text: str) -> None:
+        """Arm pending-action lock so next follow-up is forced into action mode."""
+        session.metadata["pending_action_lock"] = {
+            "active": True,
+            "remaining_turns": 2,
+            "request": request_text[:300],
+            "set_at": datetime.now().isoformat(),
+        }
+
+    def _clear_pending_action_lock(self, session: Any) -> None:
+        """Clear pending-action lock after successful action execution."""
+        session.metadata.pop("pending_action_lock", None)
+
+    def _should_promote_retry_to_action(
+        self,
+        content: str,
+        history: list[dict[str, Any]],
+    ) -> bool:
+        """Promote retry follow-ups to action turns when recent context indicates pending action."""
+        if not self._is_retry_action_followup(content):
+            return False
+
+        # Strong default: retry follow-ups are treated as action intents.
+        if history:
+            return True
+
+        recent_messages = history[-6:]
+        recent_text = " ".join(
+            str(msg.get("content", "")).lower()
+            for msg in recent_messages
+            if isinstance(msg, dict)
+        )
+        retry_context_markers = (
+            "tool çağrısı doğrulanamadı",
+            "tool çağrıları başarısız oldu",
+            "işlem yapılmadı",
+        )
+        if any(marker in recent_text for marker in retry_context_markers):
+            return True
+
+        # If recent user messages were action-like, treat retry as action.
+        for msg in reversed(recent_messages):
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") != "user":
+                continue
+            text = str(msg.get("content", ""))
+            if text and self._is_action_turn("", text):
+                return True
+        return False
+
+    def _contains_unverified_completion_claim(self, text: str) -> bool:
+        """Detect response phrases that claim completion without tool evidence."""
+        lowered = (text or "").lower()
+        claim_patterns = (
+            r"\byapt[ıi]m\b",
+            r"\bg[öo]nderdim\b",
+            r"\bald[ıi]m\b",
+            r"\ba[cç]t[ıi]m\b",
+            r"\bkapatt[ıi]m\b",
+            r"\btamamlad[ıi]m\b",
+            r"\bi did\b",
+            r"\bi sent\b",
+            r"\bi took\b",
+            r"\bi opened\b",
+            r"\bi closed\b",
+            r"\bdone\b",
+            r"\bcompleted\b",
+            r"\bfinished\b",
+        )
+        return any(re.search(pattern, lowered) for pattern in claim_patterns)
+
+    def _is_strict_live_call_action_intent(self, content: str) -> bool:
+        """
+        Detect high-confidence action intents in an active call turn.
+
+        This avoids forcing tools for regular chat utterances.
+        """
+        intent_text = self._extract_action_intent_text(content)
+        strict_patterns = (
+            r"\barasana\b",
+            r"\barar\s+m[ıi]s[ıi]n\b",
+            r"\baray[ıi]p\b",
+            r"\barama\b",
+            r"\btelefon(?:la)?\b",
+            r"\bcall\b",
+            r"\bhat[ıi]rlat\b",
+            r"\bremind(?:er)?\b",
+            r"\bhaber\s+ver\b",
+            r"\bbildir\b",
+            r"\bnotify\b",
+            r"\bschedule\b",
+            r"\bplanla\b",
+            r"\bcron\s+olu[şs]tur\b",
+            r"\bg[öo]nder\b",
+            r"\bsend\b",
+            r"\bekran\s+g[öo]r[üu]nt[üu]s[üu]\b",
+            r"\bscreenshot\b",
+            r"\bkapat\b",
+            r"\bhang\s*up\b",
+            r"\bend\s*call\b",
+        )
+        return any(re.search(pattern, intent_text) for pattern in strict_patterns)
+
     def _is_live_call_turn(self, content: str) -> bool:
         """
         Detect active call orchestration prompts.
@@ -286,15 +460,23 @@ class AgentLoop:
         self,
         tool_defs: list[dict[str, Any]],
         live_call_turn: bool,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], list[str]]:
         """Apply per-turn tool constraints for safety and predictability."""
         if not live_call_turn:
-            return tool_defs
+            return tool_defs, []
+
+        blocked_tools: list[str] = []
 
         filtered_defs: list[dict[str, Any]] = []
         for tool_def in tool_defs:
             fn = tool_def.get("function", {})
-            if fn.get("name") != "voice_call":
+            tool_name = str(fn.get("name", ""))
+
+            if self._live_call_strict_tool_sandbox and tool_name not in self._live_call_allow_tools:
+                blocked_tools.append(tool_name)
+                continue
+
+            if tool_name != "voice_call":
                 filtered_defs.append(tool_def)
                 continue
 
@@ -316,16 +498,25 @@ class AgentLoop:
                     ]
             filtered_defs.append(patched)
 
-        return filtered_defs
+        return filtered_defs, blocked_tools
+
+    def _is_live_call_tool_allowed(self, tool_name: str, tool_args: dict[str, Any]) -> bool:
+        """Final runtime guard for live-call tool execution."""
+        if not self._live_call_strict_tool_sandbox:
+            return True
+        if tool_name not in self._live_call_allow_tools:
+            return False
+        if tool_name == "voice_call":
+            action = str(tool_args.get("action", "")).lower()
+            return action in {"end_call", "list_calls"}
+        return True
 
     def _coalesce_inbound_batch(self, first_msg: InboundMessage) -> tuple[list[InboundMessage], int]:
         """
-        Coalesce bursty inbound traffic to reduce stale turn processing.
+        Collect bursty inbound traffic without dropping user messages.
 
-        Keeps the latest message per interactive session while preserving
-        first-seen ordering across sessions.
+        Queue-All policy: preserve full ordering and keep every message.
         """
-        interactive_channels = {"telegram", "whatsapp", "cli"}
         batch = [first_msg]
 
         while True:
@@ -334,32 +525,14 @@ class AgentLoop:
             except asyncio.QueueEmpty:
                 break
 
-        if len(batch) == 1:
-            return batch, 0
-
-        coalesced: list[InboundMessage] = []
-        session_index: dict[str, int] = {}
-        dropped = 0
-
-        for msg in batch:
-            if msg.channel in interactive_channels:
-                key = msg.session_key
-                if key in session_index:
-                    coalesced[session_index[key]] = msg
-                    dropped += 1
-                else:
-                    session_index[key] = len(coalesced)
-                    coalesced.append(msg)
-            else:
-                coalesced.append(msg)
-
-        return coalesced, dropped
+        return batch, 0
 
     async def _run_llm_tool_loop(
         self,
         messages: list[dict[str, Any]],
         action_turn: bool,
         live_call_turn: bool = False,
+        turn_content: str = "",
     ) -> tuple[str, list[dict[str, Any]], list[str]]:
         """
         Run iterative LLM + tool execution loop until final response.
@@ -371,25 +544,40 @@ class AgentLoop:
         final_content: str | None = None
         accumulated_tool_results: list[dict[str, Any]] = []
         executed_tool_names: list[str] = []
+        blocked_tools: list[str] = []
         tools_were_used = False
+        successful_tools_were_used = False
         no_tool_retry_count = 0
+        forced_tool_retry = False
+        strict_live_call_action = live_call_turn and self._is_strict_live_call_action_intent(turn_content)
+        enforce_action_tools = action_turn and (not live_call_turn or strict_live_call_action)
 
-        selected_model = (self.action_model or self.model) if action_turn else self.model
+        selected_model = self.model
         selected_temperature = self.action_temperature if action_turn else 0.7
+        max_turn_iterations = self.max_iterations
+        if live_call_turn and not enforce_action_tools:
+            max_turn_iterations = min(max_turn_iterations, 3)
 
-        while iteration < self.max_iterations:
+        while iteration < max_turn_iterations:
             iteration += 1
 
-            tool_defs = self._apply_turn_tool_policy(
+            tool_defs, policy_blocked_tools = self._apply_turn_tool_policy(
                 self.tools.get_definitions(),
                 live_call_turn=live_call_turn,
             )
-            tool_choice = "required" if (action_turn and not tools_were_used) else "auto"
+            if policy_blocked_tools:
+                blocked_tools.extend(policy_blocked_tools)
+            tool_choice = (
+                "required"
+                if ((enforce_action_tools or forced_tool_retry) and not successful_tools_were_used)
+                else "auto"
+            )
             logger.info(
                 "LLM request telemetry: "
                 f"model={selected_model}, tool_choice={tool_choice}, tool_count={len(tool_defs)}, "
                 f"action_turn={action_turn}, live_call_turn={live_call_turn}, "
-                f"iteration={iteration}/{self.max_iterations}"
+                f"blocked_tools={sorted(set(blocked_tools))}, "
+                f"iteration={iteration}/{max_turn_iterations}"
             )
 
             response = await self.provider.chat(
@@ -474,6 +662,28 @@ class AgentLoop:
                     args_str = json.dumps(tool_call.arguments)
                     logger.info(f"Executing tool: {tool_call.name}({args_str[:160]}...)")
 
+                    if live_call_turn and not self._is_live_call_tool_allowed(
+                        tool_call.name,
+                        tool_call.arguments,
+                    ):
+                        blocked_tools.append(tool_call.name)
+                        result = (
+                            f"Error: Tool '{tool_call.name}' live-call güvenlik politikası "
+                            "tarafından engellendi."
+                        )
+                        logger.error(
+                            f"Live call blocked risky tool: {tool_call.name} args={args_str[:160]}"
+                        )
+                        accumulated_tool_results.append({
+                            "tool": tool_call.name,
+                            "success": False,
+                            "result": result,
+                        })
+                        messages = self.context.add_tool_result(
+                            messages, tool_call.id, tool_call.name, result
+                        )
+                        continue
+
                     try:
                         result = await self.tools.execute(tool_call.name, tool_call.arguments)
                         accumulated_tool_results.append({
@@ -492,21 +702,28 @@ class AgentLoop:
                     else:
                         if not result.startswith("Error"):
                             turn_success_count += 1
+                            logger.info(
+                                f"Tool success: {tool_call.name} result={result[:180]}"
+                            )
+                        else:
+                            logger.warning(
+                                f"Tool failed: {tool_call.name} result={result[:220]}"
+                            )
 
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
 
                     # In strict action turns, stop as soon as a terminal action succeeds.
-                    if action_turn and not result.startswith("Error"):
-                        if tool_call.name == "voice_call":
-                            voice_action = str(tool_call.arguments.get("action", "")).lower()
-                            if voice_action in {"call", "end_call", "speak"}:
-                                terminal_action_executed = True
-                        elif tool_call.name == "cron":
+                    if not result.startswith("Error"):
+                        if tool_call.name == "cron":
                             cron_action = str(tool_call.arguments.get("action", "")).lower()
                             target_tool = str(tool_call.arguments.get("tool_name", "")).lower()
                             if cron_action == "add" and target_tool == "voice_call":
+                                terminal_action_executed = True
+                        elif enforce_action_tools and tool_call.name == "voice_call":
+                            voice_action = str(tool_call.arguments.get("action", "")).lower()
+                            if voice_action in {"call", "end_call", "speak"}:
                                 terminal_action_executed = True
 
                     if terminal_action_executed:
@@ -517,6 +734,9 @@ class AgentLoop:
 
                 logger.info(f"Tool execution telemetry: executed_tools={turn_tools}")
                 tools_were_used = True
+                if turn_success_count > 0:
+                    successful_tools_were_used = True
+                    forced_tool_retry = False
 
                 if terminal_action_executed:
                     successful = [t for t in accumulated_tool_results if t.get("success")]
@@ -530,7 +750,20 @@ class AgentLoop:
                         final_content = "İşlem çalıştırıldı."
                     break
 
-                if action_turn and turn_success_count == 0:
+                if live_call_turn and not enforce_action_tools:
+                    successful = [t for t in accumulated_tool_results if t.get("success")]
+                    if successful:
+                        last_ok = successful[-1]
+                        final_content = (
+                            response.content.strip()
+                            if response.content and response.content.strip()
+                            else f"İşlem tamamlandı: {last_ok['tool']}"
+                        )
+                    else:
+                        final_content = "Canlı arama için güvenli bir tool çalıştırılamadı."
+                    break
+
+                if enforce_action_tools and turn_success_count == 0:
                     if no_tool_retry_count < self.action_tool_retries:
                         no_tool_retry_count += 1
                         logger.warning(
@@ -551,7 +784,31 @@ class AgentLoop:
 
                 continue
 
-            if action_turn and not tools_were_used:
+            # Provider/model may hallucinate completion without emitting tool calls.
+            # OpenClaw-style guard: force a corrective tool-only retry before responding.
+            if (
+                not successful_tools_were_used
+                and response.content
+                and self._contains_unverified_completion_claim(response.content)
+                and no_tool_retry_count < self.action_tool_retries
+            ):
+                no_tool_retry_count += 1
+                forced_tool_retry = True
+                logger.warning(
+                    "Completion claim without tool call; retrying with forced tool instruction "
+                    f"({no_tool_retry_count}/{self.action_tool_retries})"
+                )
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "Önceki yanıt işlemin yapıldığını söylüyor ama tool çağrısı yok. "
+                        "Şimdi uygun tool'u zorunlu olarak çağır. "
+                        "Tool çalışmadan işlem tamamlandı deme."
+                    ),
+                })
+                continue
+
+            if enforce_action_tools and not successful_tools_were_used:
                 if no_tool_retry_count < self.action_tool_retries:
                     no_tool_retry_count += 1
                     logger.warning(
@@ -570,8 +827,16 @@ class AgentLoop:
                 final_content = "Tool çağrısı doğrulanamadı, işlem yapılmadı."
                 break
 
+            if forced_tool_retry and not successful_tools_were_used:
+                final_content = "Tool çağrısı doğrulanamadı, işlem yapılmadı."
+                break
+
             final_content = response.content
             break
+
+        if enforce_action_tools and not successful_tools_were_used:
+            if not final_content or not final_content.startswith("Tool"):
+                final_content = "Tool çağrıları başarısız oldu, işlem yapılmadı."
 
         if final_content is None:
             if accumulated_tool_results:
@@ -584,20 +849,30 @@ class AgentLoop:
                 final_content = "İşlem tamamlandı ancak yanıt üretilemedi."
 
         if not final_content or not final_content.strip():
-            if action_turn and not tools_were_used:
+            if enforce_action_tools and not successful_tools_were_used:
                 final_content = "Tool çağrısı doğrulanamadı, işlem yapılmadı."
             elif accumulated_tool_results:
                 final_content = "✓ İşlem tamamlandı."
             else:
                 final_content = "İşlem tamamlandı ancak yanıt üretilemedi."
 
+        if (
+            final_content
+            and not executed_tool_names
+            and (action_turn or self._is_retry_action_followup(turn_content))
+            and self._contains_unverified_completion_claim(final_content)
+        ):
+            logger.warning("Suppressed unverified completion claim because no tool was executed.")
+            final_content = "Tool çalıştırılmadı, işlem yapılmadı."
+
         logger.info(
             "LLM final telemetry: "
             f"final_content_length={len(final_content)}, executed_tools={executed_tool_names}, "
-            f"action_turn={action_turn}, live_call_turn={live_call_turn}"
+            f"action_turn={action_turn}, live_call_turn={live_call_turn}, "
+            f"blocked_tools={sorted(set(blocked_tools))}"
         )
 
-        if action_turn and not executed_tool_names:
+        if enforce_action_tools and not executed_tool_names:
             logger.error("Action turn alarm: executed_tools=0")
 
         return final_content, accumulated_tool_results, executed_tool_names
@@ -733,12 +1008,26 @@ class AgentLoop:
         )
 
         action_turn = self._is_action_turn(msg.channel, msg.content)
+        if not action_turn and self._should_promote_retry_to_action(msg.content, history):
+            action_turn = True
+        if not action_turn and self._consume_pending_action_lock(session, msg.content):
+            action_turn = True
+            logger.info("Pending action lock promoted this turn to action_turn=True")
         live_call_turn = self._is_live_call_turn(msg.content)
-        final_content, _, _ = await self._run_llm_tool_loop(
+        final_content, tool_results, _executed_tools = await self._run_llm_tool_loop(
             messages=messages,
             action_turn=action_turn,
             live_call_turn=live_call_turn,
+            turn_content=msg.content,
         )
+
+        if action_turn:
+            successful_tools = [r for r in tool_results if r.get("success")]
+            if successful_tools:
+                self._clear_pending_action_lock(session)
+            else:
+                self._set_pending_action_lock(session, msg.content)
+                logger.warning("Action turn ended without successful tool execution; pending lock armed.")
         
         # Save to session
         session.add_message("user", msg.content)
@@ -799,12 +1088,28 @@ class AgentLoop:
         )
         
         action_turn = self._is_action_turn(origin_channel, msg.content)
+        if not action_turn and self._should_promote_retry_to_action(
+            msg.content,
+            session.get_history(max_messages=self.context_messages),
+        ):
+            action_turn = True
+        if not action_turn and self._consume_pending_action_lock(session, msg.content):
+            action_turn = True
+            logger.info("Pending action lock promoted system turn to action_turn=True")
         live_call_turn = self._is_live_call_turn(msg.content)
-        final_content, _, _ = await self._run_llm_tool_loop(
+        final_content, tool_results, _executed_tools = await self._run_llm_tool_loop(
             messages=messages,
             action_turn=action_turn,
             live_call_turn=live_call_turn,
+            turn_content=msg.content,
         )
+
+        if action_turn:
+            successful_tools = [r for r in tool_results if r.get("success")]
+            if successful_tools:
+                self._clear_pending_action_lock(session)
+            else:
+                self._set_pending_action_lock(session, msg.content)
         
         # Save to session (mark as system message in history)
         session.add_message("user", f"[System: {msg.sender_id}] {msg.content}")

@@ -34,9 +34,10 @@ dependencies = [
     "aiohttp>=3.9.0",
     "starlette>=0.32.0",
     "uvicorn>=0.24.0",
-    "audioop-lts>=0.2.0",
+    "audioop-lts>=0.2.0; python_version>='3.13'",
     "python-multipart>=0.0.6",
     "simple-term-menu>=1.6.0",
+    "pyngrok>=7.0.0",
 ]
 
 [project.optional-dependencies]

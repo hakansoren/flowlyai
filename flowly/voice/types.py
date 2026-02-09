@@ -46,6 +46,8 @@ class CallState:
     last_speech_time: float = field(default_factory=time.time)
     # Temporary guard window to avoid immediate re-trigger after playback
     suppress_until: float = 0.0
+    # Prevent overlapping transcription turns within a single active call.
+    turn_lock: bool = False
 
     # Session linking
     telegram_chat_id: str | None = None
@@ -61,8 +63,12 @@ class CallState:
     # Lightweight dedupe state to avoid repeated turns/speech.
     last_user_text: str = ""
     last_user_at: float = 0.0
+    duplicate_user_drops: int = 0
+    first_user_text_at: float | None = None
     last_spoken_text: str = ""
     last_spoken_at: float = 0.0
+    duplicate_tts_drops: int = 0
+    duplicate_tts_streak: int = 0
 
     def __post_init__(self):
         # Ensure tts_queue is always an asyncio.Queue

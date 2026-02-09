@@ -1,9 +1,12 @@
 """Screenshot tool for capturing screen images."""
 
+import json
 import mimetypes
 import platform
 import subprocess
 import shutil
+import urllib.request
+import urllib.error
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -11,6 +14,9 @@ from typing import Any
 from loguru import logger
 
 from flowly.agent.tools.base import Tool
+
+# Electron desktop app API discovery file
+_ELECTRON_API_FILE = Path.home() / ".flowly" / "electron-api.json"
 
 
 class ScreenshotTool(Tool):
@@ -160,12 +166,92 @@ class ScreenshotTool(Tool):
             logger.error(f"Screenshot failed: {e}")
             return f"Error capturing screenshot: {str(e)}"
 
+    def _capture_via_electron_sync(
+        self, output_path: Path, display: int
+    ) -> str | None:
+        """
+        Try to capture screenshot via Electron desktop app's HTTP API.
+
+        The Electron app has macOS Screen Recording (TCC) permission and exposes
+        a localhost-only HTTP endpoint for screenshot capture with bearer token auth.
+
+        Returns None on success, error message on failure,
+        or "UNAVAILABLE" if Electron is not running.
+        """
+        if not _ELECTRON_API_FILE.exists():
+            return "UNAVAILABLE"
+
+        try:
+            api_data = json.loads(_ELECTRON_API_FILE.read_text())
+            port = int(api_data["port"])
+            token = str(api_data["token"])
+        except (ValueError, KeyError, json.JSONDecodeError, OSError):
+            return "UNAVAILABLE"
+
+        url = f"http://127.0.0.1:{port}/screenshot"
+        payload = json.dumps({
+            "display": display,
+            "format": output_path.suffix.lstrip("."),
+            "filename": output_path.stem,
+        }).encode()
+
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read())
+                if data.get("success"):
+                    electron_path = Path(data.get("path", ""))
+                    if electron_path.exists():
+                        if electron_path != output_path:
+                            electron_path.rename(output_path)
+                        return None  # Success
+                    return "Error: Electron reported success but file not found"
+                return f"Error: Electron screenshot failed - {data.get('error', 'unknown')}"
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                logger.warning("Electron screenshot auth failed (token mismatch)")
+                return "UNAVAILABLE"
+            logger.warning(f"Electron screenshot HTTP error: {e.code}")
+            return "UNAVAILABLE"
+        except (urllib.error.URLError, OSError):
+            return "UNAVAILABLE"
+        except Exception as e:
+            logger.warning(f"Electron screenshot delegation failed: {e}")
+            return "UNAVAILABLE"
+
     async def _capture_macos(self, output_path: Path, display: int) -> str | None:
         """
-        Capture screenshot on macOS using screencapture.
+        Capture screenshot on macOS.
+
+        Tries Electron desktop app delegation first (has TCC permission),
+        falls back to direct screencapture if Electron is not available.
 
         Returns None on success, error message on failure.
         """
+        # Try Electron desktop app first (has Screen Recording permission)
+        import asyncio
+
+        electron_result = await asyncio.to_thread(
+            self._capture_via_electron_sync, output_path, display
+        )
+        if electron_result is None:
+            logger.info("Screenshot captured via Electron desktop app")
+            return None  # Success
+        if electron_result != "UNAVAILABLE":
+            return electron_result  # Electron was available but capture failed
+
+        # Fallback: direct screencapture (works if this process has TCC permission)
+        logger.debug("Electron not available, falling back to direct screencapture")
+
         if not shutil.which("screencapture"):
             return "Error: 'screencapture' command not found"
 
@@ -187,6 +273,24 @@ class ScreenshotTool(Tool):
 
             if result.returncode != 0:
                 error = result.stderr.strip() or "Unknown error"
+                error_lower = error.lower()
+                if "could not create image from display" in error_lower:
+                    return (
+                        "Error: macOS ekran görüntüsü alınamadı (display capture unavailable).\n"
+                        "Muhtemel nedenler:\n"
+                        "1) Flowly process'ine Screen Recording izni verilmemiş\n"
+                        "2) Process aktif GUI (Aqua) oturumunda çalışmıyor\n\n"
+                        "Kontrol:\n"
+                        "- System Settings -> Privacy & Security -> Screen Recording\n"
+                        "- Flowly Desktop uygulamasını aç (otomatik izin delegasyonu)\n"
+                        "- Veya Flowly binary'sine manuel izin ver"
+                    )
+                if "operation not permitted" in error_lower or "not authorized" in error_lower:
+                    return (
+                        "Error: Screen Recording izni yok.\n"
+                        "Flowly Desktop uygulamasını açarak veya\n"
+                        "System Settings -> Privacy & Security -> Screen Recording'den izin ver."
+                    )
                 return f"Error: screencapture failed - {error}"
 
             return None  # Success

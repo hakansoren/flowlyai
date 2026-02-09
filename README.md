@@ -87,6 +87,69 @@ uv run flowly onboard
 uv run flowly agent -m "What is 2+2?"
 ```
 
+## Run In Background (Terminal Closed)
+
+Install a user service once and keep Flowly running after terminal closes:
+
+```bash
+flowly service install --start
+flowly service status
+```
+
+Manage lifecycle:
+
+```bash
+flowly service restart
+flowly service stop
+flowly service uninstall
+```
+
+| Platform | Backend |
+|----------|---------|
+| **macOS** | launchd (LaunchAgents) |
+| **Linux** | systemd (user service) |
+| **Windows** | Task Scheduler (schtasks) |
+
+This runs the full gateway stack in background (agent loop + channels + cron + voice plugin).
+
+## Personas
+
+Give your Flowly a unique personality! Choose from 8 built-in personas:
+
+| Persona | Style |
+|---------|-------|
+| `default` | Helpful and friendly (standard) |
+| `jarvis` | J.A.R.V.I.S. — refined British AI, dry wit |
+| `friday` | F.R.I.D.A.Y. — warm and professional |
+| `pirate` | Captain Flowly — "Aye aye, Captain!" |
+| `samurai` | Disciplined warrior, brief and wise |
+| `casual` | Your best buddy, relaxed and fun |
+| `professor` | Thorough explanations, step by step |
+| `butler` | Distinguished English butler, ultra-polite |
+
+**Set during install:**
+
+```bash
+flowly service install --start --persona jarvis
+```
+
+**Change anytime:**
+
+```bash
+flowly persona list          # See all available personas
+flowly persona set pirate    # Switch to pirate mode
+flowly persona show jarvis   # Preview a persona
+flowly service restart       # Apply the change
+```
+
+**Or pass directly to gateway:**
+
+```bash
+flowly gateway --persona professor
+```
+
+Personas only change how the bot talks — all tools, memory, and functionality stay the same. You can also create your own by adding a `.md` file to `~/.flowly/workspace/personas/`.
+
 ## 💬 Chat Apps
 
 Talk to your Flowly through Telegram or WhatsApp — anytime, anywhere.
@@ -173,12 +236,19 @@ uv run flowly gateway
 | `flowly agent -m "..."` | Chat with the agent |
 | `flowly agent` | Interactive chat mode |
 | `flowly gateway` | Start the gateway |
+| `flowly gateway --persona jarvis` | Start gateway with a persona |
+| `flowly service install --start` | Install/start background service |
+| `flowly service install --persona pirate` | Install service with a persona |
+| `flowly service status` | Check background service health |
+| `flowly service logs -f` | Follow background service logs live |
+| `flowly service restart` | Restart background service |
+| `flowly persona list` | List available personas |
+| `flowly persona set <name>` | Set active persona |
+| `flowly persona show <name>` | Preview a persona |
 | `flowly status` | Show status |
+| `flowly setup voice-calls` | Configure integrated Twilio voice plugin |
 | `flowly channels login` | Link WhatsApp (scan QR) |
 | `flowly channels status` | Show channel status |
-| `flowly voice install` | Install voice bridge dependencies |
-| `flowly voice start` | Start the voice bridge server |
-| `flowly voice status` | Check voice bridge status |
 
 > On Windows, use `uv run flowly <command>` or add the script to your PATH.
 

@@ -104,6 +104,7 @@ def setup_telegram() -> bool:
     # Success message
     console.print("\n[green]✓ Telegram setup complete![/green]")
     console.print(f"\nStart the bot with: [cyan]flowly gateway[/cyan]")
+    console.print("[dim]Background mode:[/dim] [cyan]flowly service install --start[/cyan]")
 
     if dm_policy == "pairing":
         console.print(f"\nWhen users message the bot, they'll get a pairing code.")
@@ -322,8 +323,8 @@ def setup_voice_calls() -> bool:
         return True
 
     # Webhook URL
-    console.print("\n[dim]Voice calls require a public webhook URL for Twilio.[/dim]")
-    console.print("[dim]Use ngrok or similar for local development.[/dim]")
+    console.print("\n[dim]Voice calls require a static public webhook URL for Twilio.[/dim]")
+    console.print("[dim]Production recommendation: fixed domain + TLS + reverse proxy.[/dim]")
     webhook_url = Prompt.ask("Enter webhook base URL (e.g., https://your-domain.com)").strip()
 
     # STT Provider
@@ -423,6 +424,14 @@ def setup_voice_calls() -> bool:
     config.integrations.voice.twilio_auth_token = auth_token
     config.integrations.voice.twilio_phone_number = phone_number
     config.integrations.voice.webhook_base_url = webhook_url
+    config.integrations.voice.legacy_bridge_enabled = False
+    config.integrations.voice.skip_signature_verification = False
+    from urllib.parse import urlparse
+    parsed_host = urlparse(webhook_url).hostname or ""
+    config.integrations.voice.webhook_security.allowed_hosts = [parsed_host] if parsed_host else []
+    config.integrations.voice.webhook_security.trust_forwarding_headers = False
+    config.integrations.voice.webhook_security.trusted_proxy_ips = []
+    config.integrations.voice.live_call.strict_tool_sandbox = True
     config.integrations.voice.stt_provider = stt_provider
     config.integrations.voice.tts_provider = tts_provider
     config.integrations.voice.groq_api_key = groq_key
@@ -434,8 +443,10 @@ def setup_voice_calls() -> bool:
 
     console.print("\n[green]✓[/green] Voice calls configuration saved")
     console.print("\n[dim]Next steps:[/dim]")
-    console.print("  1. Start the voice bridge: [cyan]cd voice-bridge && npm start[/cyan]")
-    console.print("  2. Start Flowly gateway: [cyan]flowly gateway[/cyan]")
+    console.print("  1. Start Flowly gateway: [cyan]flowly gateway[/cyan]")
+    console.print("     or background mode: [cyan]flowly service install --start[/cyan]")
+    console.print("  2. Set Twilio Voice webhook to: [cyan]{}/incoming[/cyan]".format(webhook_url.rstrip("/")))
+    console.print("  3. Set Twilio Status callback to: [cyan]{}/status[/cyan]".format(webhook_url.rstrip("/")))
     console.print("\n[dim]The agent can now make calls with:[/dim]")
     console.print("  • Call +1234567890 and say hello")
     console.print("  • Make a voice call to [phone number]")
@@ -560,4 +571,5 @@ def setup_all() -> None:
     console.print(f"\n{'─' * 40}")
     console.print("[bold green]✓ Setup complete![/bold green]\n")
     console.print("Start Flowly with: [cyan]flowly gateway[/cyan]")
+    console.print("Background mode: [cyan]flowly service install --start[/cyan]")
     console.print()

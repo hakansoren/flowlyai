@@ -121,6 +121,10 @@ voice_call(
 ) -> str
 ```
 
+Live-call safety:
+- During active phone conversations, runtime policy can restrict tools to a safe subset.
+- Tool schema is authoritative over prose instructions in this document.
+
 ## Heartbeat Task Management
 
 The `HEARTBEAT.md` file in the workspace is checked every 30 minutes.

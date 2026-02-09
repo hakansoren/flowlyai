@@ -55,13 +55,13 @@ class AgentDefaults(BaseModel):
     """Default agent configuration."""
     workspace: str = "~/.flowly/workspace"
     model: str = "moonshotai/kimi-k2.5"
-    action_model: str | None = "moonshotai/kimi-k2.5"
     max_tokens: int = 8192
     temperature: float = 0.7
     action_temperature: float = 0.1
     action_tool_retries: int = 2
     max_tool_iterations: int = 20
     context_messages: int = 100  # Max messages to include in context
+    persona: str = "default"  # Bot persona (default, jarvis, pirate, etc.)
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
 
 
@@ -120,18 +120,38 @@ class TrelloConfig(BaseModel):
     token: str = ""  # Generate from the same page
 
 
-class VoiceBridgeConfig(BaseModel):
-    """Voice bridge configuration for Twilio calls."""
-    enabled: bool = False
-    bridge_url: str = "http://localhost:8765"  # Voice bridge API URL
+class VoiceWebhookSecurityConfig(BaseModel):
+    """Voice webhook security configuration."""
+    allowed_hosts: list[str] = Field(default_factory=list)
+    trust_forwarding_headers: bool = False
+    trusted_proxy_ips: list[str] = Field(default_factory=list)
 
-    # Twilio settings (used by voice-bridge, stored here for setup wizard)
+
+class VoiceLiveCallConfig(BaseModel):
+    """Live-call tool sandbox policy."""
+    strict_tool_sandbox: bool = True
+    allow_tools: list[str] = Field(
+        default_factory=lambda: ["voice_call", "message", "screenshot", "system"]
+    )
+
+
+class VoiceBridgeConfig(BaseModel):
+    """Integrated voice plugin configuration for Twilio calls."""
+    enabled: bool = False
+    # Legacy bridge fallback API URL (optional, disabled by default)
+    bridge_url: str = "http://localhost:8765"
+    legacy_bridge_enabled: bool = False
+
+    # Twilio settings
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
     twilio_phone_number: str = ""
 
-    # Webhook URL (public URL for Twilio callbacks)
+    # Webhook URL (static public URL for Twilio callbacks)
     webhook_base_url: str = ""
+    skip_signature_verification: bool = False
+    webhook_security: VoiceWebhookSecurityConfig = Field(default_factory=VoiceWebhookSecurityConfig)
+    live_call: VoiceLiveCallConfig = Field(default_factory=VoiceLiveCallConfig)
 
     # Link voice calls to Telegram session (for screenshots, messages etc.)
     telegram_chat_id: str = ""  # Your Telegram chat ID - voice calls will use this session
@@ -145,6 +165,9 @@ class VoiceBridgeConfig(BaseModel):
     elevenlabs_api_key: str = ""  # For ElevenLabs STT/TTS
     tts_voice: str = "21m00Tcm4TlvDq8ikWAM"  # TTS voice (provider-specific, default: rachel)
     language: str = "en-US"
+
+    # Ngrok auto-tunnel (alternative to manual webhook_base_url)
+    ngrok_authtoken: str = ""  # ngrok authtoken from https://dashboard.ngrok.com
 
 
 class IntegrationsConfig(BaseModel):

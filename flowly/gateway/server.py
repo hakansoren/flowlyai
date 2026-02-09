@@ -42,7 +42,8 @@ class GatewayServer:
         """Create the aiohttp application."""
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
-        app.router.add_post("/api/voice/message", self._handle_voice_message)
+        if self.on_voice_message:
+            app.router.add_post("/api/voice/message", self._handle_voice_message)
         return app
 
     async def _handle_health(self, request: web.Request) -> web.Response:

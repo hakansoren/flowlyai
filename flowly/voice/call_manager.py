@@ -26,6 +26,8 @@ SPEECH_ENERGY_THRESHOLD = 500  # RMS threshold for speech detection
 POST_TTS_SUPPRESS_MS = 400  # Brief guard after playback to avoid turn double-trigger
 TRANSCRIPT_DEDUPE_WINDOW_S = 4.0
 TTS_DEDUPE_WINDOW_S = 10.0
+DUPLICATE_USER_DROP_ALARM = 3
+DUPLICATE_TTS_STREAK_ALARM = 3
 
 
 class CallManager:
@@ -58,6 +60,8 @@ class CallManager:
         # Background tasks
         self._silence_detector_task: asyncio.Task | None = None
         self._tts_tasks: dict[str, asyncio.Task] = {}
+        self._duplicate_transcript_drops = 0
+        self._duplicate_tts_drops = 0
 
     async def start(self):
         """Start the call manager."""
@@ -240,8 +244,13 @@ class CallManager:
 
     async def _process_speech(self, call: CallState):
         """Process accumulated speech buffer."""
+        if call.turn_lock:
+            logger.debug(f"Skipping speech processing while turn lock is active: {call.call_sid}")
+            return
         if not call.speech_buffer:
             return
+
+        call.turn_lock = True
 
         # Combine all audio chunks
         combined_audio = b''.join(call.speech_buffer)
@@ -271,13 +280,32 @@ class CallManager:
                     and normalized_user_text == call.last_user_text
                     and (now - call.last_user_at) < TRANSCRIPT_DEDUPE_WINDOW_S
                 ):
+                    call.duplicate_user_drops += 1
+                    self._duplicate_transcript_drops += 1
                     logger.info(
                         f"Skipping duplicate transcription for call {call.call_sid}: {result.text[:60]}"
                     )
+                    if call.duplicate_user_drops >= DUPLICATE_USER_DROP_ALARM:
+                        logger.error(
+                            "Repeated duplicate transcript drops detected: call=%s drops=%s total=%s",
+                            call.call_sid,
+                            call.duplicate_user_drops,
+                            self._duplicate_transcript_drops,
+                        )
                     return
 
                 call.last_user_text = normalized_user_text
                 call.last_user_at = now
+                call.duplicate_user_drops = 0
+                if call.first_user_text_at is None:
+                    call.first_user_text_at = now
+                    if call.answered_at:
+                        latency_ms = int((now - call.answered_at) * 1000)
+                        logger.info(
+                            "Voice first speech latency: call=%s latency_ms=%s",
+                            call.call_sid,
+                            latency_ms,
+                        )
                 logger.info(f"Transcription: {result.text}")
 
                 # Get response from agent
@@ -298,6 +326,7 @@ class CallManager:
             else:
                 call.status = CallStatus.ACTIVE
                 call.is_listening = True
+            call.turn_lock = False
 
     async def speak(self, call_sid: str, text: str):
         """Queue text for TTS playback.
@@ -318,11 +347,22 @@ class CallManager:
             and normalized_text == call.last_spoken_text
             and (now - call.last_spoken_at) < TTS_DEDUPE_WINDOW_S
         ):
+            call.duplicate_tts_drops += 1
+            call.duplicate_tts_streak += 1
+            self._duplicate_tts_drops += 1
             logger.info(f"Skipping duplicate TTS for call {call_sid}: {text[:60]}")
+            if call.duplicate_tts_streak >= DUPLICATE_TTS_STREAK_ALARM:
+                logger.error(
+                    "Repeated identical TTS drops detected: call=%s streak=%s total=%s",
+                    call.call_sid,
+                    call.duplicate_tts_streak,
+                    self._duplicate_tts_drops,
+                )
             return
 
         call.last_spoken_text = normalized_text
         call.last_spoken_at = now
+        call.duplicate_tts_streak = 0
         logger.info(f"Queuing TTS for call {call_sid}: {text[:50]}...")
         await call.tts_queue.put(text)
 
