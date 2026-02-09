@@ -12,6 +12,8 @@ Bu dokumanin amaci: UIA'nin hangi entegrasyonu hangi dosyaya yazacagini ve hangi
 
 Not: `config.json` degisince servisler bu ayarlari otomatik hot-reload etmez; pratikte `flowly gateway` restart etmek gerekir.
 
+Not 2: Uretim benzeri kullanimda `flowly service` komutlari ile background servis calistirin; terminal kapaninca da calismaya devam eder.
+
 ---
 
 ## 2) Entegrasyon Ozet Tablosu
@@ -235,3 +237,25 @@ Minimum ornek:
 - Voice: config yazildi + provider keyleri tam + Twilio webhook/public URL dogru + voice runtime calisiyor.
 - Trello/LLM/Brave: config yazildi + key gecerli + gateway restart edildi.
 
+---
+
+## 6) Runtime Yonetimi (Background Service)
+
+Flowly'nin terminal kapansa da calismasi icin `service` komutlari kullanilir.
+
+Temel komutlar:
+
+```bash
+flowly service install --start
+flowly service status
+flowly service start
+flowly service stop
+flowly service restart
+flowly service uninstall
+```
+
+Pratik:
+
+- Ilk kurulumdan sonra onerilen yol: `flowly service install --start`
+- Config degisikligi sonrasi: `flowly service restart`
+- Sadece test/gelistirme icin one-shot: `flowly gateway`

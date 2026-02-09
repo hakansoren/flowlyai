@@ -19,23 +19,24 @@ class ContextBuilder:
     
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
     
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, persona: str = "default"):
         self.workspace = workspace
+        self.persona = persona
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
     
     def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
         """
         Build the system prompt from bootstrap files, memory, and skills.
-        
+
         Args:
             skill_names: Optional list of skills to include.
-        
+
         Returns:
             Complete system prompt.
         """
         parts = []
-        
+
         # Core identity
         parts.append(self._get_identity())
         
@@ -74,10 +75,30 @@ Skills with available="false" need dependencies installed first - you can try in
         from datetime import datetime
         now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
         workspace_path = str(self.workspace.expanduser().resolve())
-        
-        return f"""# Flowly 🐈
 
-You are Flowly, a helpful AI assistant with access to powerful tools.
+        # Load persona-specific identity if available
+        persona_intro = ""
+        if self.persona and self.persona != "default":
+            persona_path = self.workspace / "personas" / f"{self.persona}.md"
+            if persona_path.exists():
+                persona_intro = persona_path.read_text(encoding="utf-8").strip()
+
+        if persona_intro:
+            identity_header = f"""# CRITICAL PERSONA OVERRIDE — READ THIS FIRST
+
+{persona_intro}
+
+**IMPORTANT: The persona rules above are your PRIMARY identity. Follow them in EVERY response without exception.
+You are NOT Flowly. You are NOT a generic AI assistant. You ARE the character defined above.
+If any instruction below mentions "Flowly", ignore that name — use your persona identity instead.**
+
+You have access to powerful tools. Your persona defines HOW you communicate — follow it strictly."""
+        else:
+            identity_header = """# Flowly
+
+You are Flowly, a helpful AI assistant with access to powerful tools."""
+
+        return f"""{identity_header}
 
 ## Available Tools
 
@@ -103,6 +124,7 @@ You have these tools - USE THEM when the user asks for related actions:
 
 **IMPORTANT: Use tools when the user requests a real action or external data.**
 For normal conversation, answer directly without unnecessary tool calls.
+When textual instructions conflict with a tool schema, follow the tool schema.
 
 ## exec Tool - Application and System Control
 
@@ -254,7 +276,7 @@ If the voice_call tool is available, you can make and manage real-time phone cal
 4. Use action="end_call" when the conversation is complete
 
 **Examples:**
-- "Call +905551234567" → voice_call(action="call", to="+905551234567", greeting="Merhaba, ben Flowly. Size nasıl yardımcı olabilirim?")
+- "Call +905551234567" → voice_call(action="call", to="+905551234567", greeting="Hello, how can I help you?")
 - "Say goodbye and hang up" → voice_call(action="end_call", call_sid="...", message="Teşekkürler, iyi günler!")
 - "List active calls" → voice_call(action="list_calls")
 
@@ -315,15 +337,23 @@ Always be helpful, accurate, and concise. When using tools, explain what you're 
 When remembering something, write to {workspace_path}/memory/MEMORY.md"""
     
     def _load_bootstrap_files(self) -> str:
-        """Load all bootstrap files from workspace."""
+        """Load all bootstrap files from workspace, substituting persona for SOUL.md."""
         parts = []
-        
+
         for filename in self.BOOTSTRAP_FILES:
+            # If this is SOUL.md, try loading the persona file instead
+            if filename == "SOUL.md" and self.persona:
+                persona_path = self.workspace / "personas" / f"{self.persona}.md"
+                if persona_path.exists():
+                    content = persona_path.read_text(encoding="utf-8")
+                    parts.append(f"## Persona (ACTIVE — follow strictly)\n\n{content}\n\n**Reminder: Stay in this persona for ALL responses. Never identify as Flowly or a generic assistant.**")
+                    continue
+
             file_path = self.workspace / filename
             if file_path.exists():
                 content = file_path.read_text(encoding="utf-8")
                 parts.append(f"## {filename}\n\n{content}")
-        
+
         return "\n\n".join(parts) if parts else ""
     
     def build_messages(

@@ -5,61 +5,261 @@ Handles:
 - WebSocket connections for media streams
 """
 
-import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import logging
-from typing import Callable, Awaitable
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlparse
 
 from starlette.applications import Starlette
-from starlette.routing import Route, WebSocketRoute
 from starlette.requests import Request
-from starlette.responses import Response, PlainTextResponse
+from starlette.responses import PlainTextResponse, Response
+from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket
 
+from flowly.config.schema import VoiceWebhookSecurityConfig
 from .call_manager import CallManager
 
 logger = logging.getLogger(__name__)
+
+MAX_WEBHOOK_BODY_BYTES = 1024 * 1024
+
+
+def _first_header(headers: dict[str, str], key: str) -> str | None:
+    value = headers.get(key)
+    if not value:
+        return None
+    return value.split(",")[0].strip()
+
+
+def _extract_host(raw_host: str | None) -> str | None:
+    if not raw_host:
+        return None
+    candidate = raw_host.strip()
+    if not candidate:
+        return None
+    if candidate.startswith("["):
+        end = candidate.find("]")
+        if end == -1:
+            return None
+        return candidate[1:end].lower()
+    if "@" in candidate:
+        return None
+    return candidate.split(":")[0].lower()
+
+
+def _normalize_allowed_hosts(cfg: VoiceWebhookSecurityConfig) -> set[str]:
+    allowed: set[str] = set()
+    for host in cfg.allowed_hosts:
+        extracted = _extract_host(host)
+        if extracted:
+            allowed.add(extracted)
+    return allowed
+
+
+def _is_trusted_proxy(remote_ip: str | None, cfg: VoiceWebhookSecurityConfig) -> bool:
+    if not cfg.trusted_proxy_ips:
+        return True
+    if not remote_ip:
+        return False
+    return remote_ip in set(cfg.trusted_proxy_ips)
+
+
+def _resolve_request_origin(
+    request: Request,
+    webhook_security: VoiceWebhookSecurityConfig,
+) -> str | None:
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    allowed_hosts = _normalize_allowed_hosts(webhook_security)
+    has_allowlist = len(allowed_hosts) > 0
+
+    remote_ip = request.client.host if request.client else None
+    from_trusted_proxy = _is_trusted_proxy(remote_ip, webhook_security)
+    trust_forwarded = (
+        (has_allowlist or webhook_security.trust_forwarding_headers) and from_trusted_proxy
+    )
+
+    if trust_forwarded:
+        proto = _first_header(headers, "x-forwarded-proto") or request.url.scheme or "https"
+    else:
+        proto = request.url.scheme or "https"
+
+    host_candidates: list[str] = []
+    if trust_forwarded:
+        for header_key in ("x-forwarded-host", "x-original-host", "ngrok-forwarded-host"):
+            candidate = _extract_host(_first_header(headers, header_key))
+            if candidate:
+                host_candidates.append(candidate)
+
+    host_candidates.append(_extract_host(_first_header(headers, "host")) or "")
+
+    chosen_host: str | None = None
+    for candidate in host_candidates:
+        if not candidate:
+            continue
+        if has_allowlist and candidate not in allowed_hosts:
+            continue
+        chosen_host = candidate
+        break
+
+    if not chosen_host:
+        return None
+
+    if proto not in {"http", "https"}:
+        proto = "https"
+
+    return f"{proto}://{chosen_host}"
+
+
+def _build_signature_url(
+    request: Request,
+    webhook_base_url: str,
+    webhook_security: VoiceWebhookSecurityConfig,
+) -> str | None:
+    base = webhook_base_url.strip().rstrip("/")
+    if base:
+        parsed = urlparse(base)
+        if not parsed.scheme or not parsed.netloc:
+            return None
+        url = f"{base}{request.url.path}"
+    else:
+        origin = _resolve_request_origin(request, webhook_security)
+        if not origin:
+            return None
+        url = f"{origin}{request.url.path}"
+
+    if request.url.query:
+        url = f"{url}?{request.url.query}"
+    return url
+
+
+def _build_stream_url(
+    request: Request,
+    webhook_base_url: str,
+    webhook_security: VoiceWebhookSecurityConfig,
+) -> str:
+    origin = _resolve_request_origin(request, webhook_security)
+    if not origin and webhook_base_url.strip():
+        parsed = urlparse(webhook_base_url.strip())
+        if parsed.scheme and parsed.netloc:
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+
+    if not origin:
+        raise ValueError("Unable to resolve public stream origin")
+
+    if origin.startswith("https://"):
+        ws_origin = "wss://" + origin[len("https://") :]
+    elif origin.startswith("http://"):
+        ws_origin = "ws://" + origin[len("http://") :]
+    else:
+        ws_origin = origin
+    return f"{ws_origin}/media-stream"
+
+
+def _validate_twilio_signature(
+    auth_token: str,
+    signature: str | None,
+    url: str,
+    pairs: list[tuple[str, str]],
+) -> bool:
+    if not signature:
+        return False
+
+    data_to_sign = url + "".join(
+        f"{key}{value}" for key, value in sorted(pairs, key=lambda item: item[0])
+    )
+    expected = base64.b64encode(
+        hmac.new(auth_token.encode("utf-8"), data_to_sign.encode("utf-8"), hashlib.sha1).digest()
+    ).decode("utf-8")
+    return hmac.compare_digest(signature, expected)
+
+
+async def _parse_form_payload(request: Request) -> tuple[str, list[tuple[str, str]], dict[str, str]]:
+    body = await request.body()
+    if len(body) > MAX_WEBHOOK_BODY_BYTES:
+        raise ValueError("PayloadTooLarge")
+
+    raw_body = body.decode("utf-8", errors="ignore")
+    pairs = parse_qsl(raw_body, keep_blank_values=True)
+    form: dict[str, str] = {}
+    for key, value in pairs:
+        form[key] = value
+    return raw_body, pairs, form
 
 
 def create_voice_app(
     call_manager: CallManager,
     webhook_base_url: str,
+    twilio_auth_token: str,
+    webhook_security: VoiceWebhookSecurityConfig | None = None,
+    skip_signature_verification: bool = False,
 ) -> Starlette:
-    """Create the voice webhook Starlette application.
+    """Create the voice webhook Starlette application."""
 
-    Args:
-        call_manager: Call manager instance
-        webhook_base_url: Public URL for Twilio webhooks (e.g., ngrok URL)
+    security = webhook_security or VoiceWebhookSecurityConfig()
+    unauthorized_webhook_count = 0
 
-    Returns:
-        Starlette application
-    """
+    async def _verify_request(request: Request) -> tuple[dict[str, str] | None, Response | None]:
+        nonlocal unauthorized_webhook_count
+
+        if request.method != "POST":
+            return None, PlainTextResponse("Method Not Allowed", status_code=405)
+
+        try:
+            _, pairs, form = await _parse_form_payload(request)
+        except ValueError:
+            return None, PlainTextResponse("Payload Too Large", status_code=413)
+        except Exception:
+            return None, PlainTextResponse("Bad Request", status_code=400)
+
+        if skip_signature_verification:
+            return form, None
+
+        verification_url = _build_signature_url(request, webhook_base_url, security)
+        signature = request.headers.get("X-Twilio-Signature")
+        valid = bool(verification_url) and _validate_twilio_signature(
+            auth_token=twilio_auth_token,
+            signature=signature,
+            url=verification_url or "",
+            pairs=pairs,
+        )
+
+        if not valid:
+            unauthorized_webhook_count += 1
+            logger.warning(
+                "Unauthorized Twilio webhook rejected: count=%s path=%s client=%s",
+                unauthorized_webhook_count,
+                request.url.path,
+                request.client.host if request.client else "unknown",
+            )
+            return None, PlainTextResponse("Unauthorized", status_code=401)
+
+        return form, None
 
     async def handle_incoming_call(request: Request) -> Response:
-        """Handle incoming call from Twilio.
+        form, error = await _verify_request(request)
+        if error:
+            return error
+        assert form is not None
 
-        Returns TwiML to connect media stream.
-        """
-        form = await request.form()
         call_sid = form.get("CallSid", "")
         from_number = form.get("From", "")
         to_number = form.get("To", "")
 
-        logger.info(f"Incoming call: {call_sid} from {from_number}")
+        logger.info("Incoming call: %s from %s", call_sid, from_number)
 
-        # Create call state
         call_manager.create_call(
             call_sid=call_sid,
             from_number=from_number,
             to_number=to_number,
         )
 
-        # Build media stream URL
-        stream_url = f"{webhook_base_url.replace('https://', 'wss://').replace('http://', 'ws://')}/media-stream"
+        try:
+            stream_url = _build_stream_url(request, webhook_base_url, security)
+        except Exception:
+            return PlainTextResponse("Webhook origin could not be resolved", status_code=400)
 
-        # Return TwiML to connect media stream
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
@@ -69,37 +269,40 @@ def create_voice_app(
     </Connect>
 </Response>"""
 
-        return Response(
-            content=twiml,
-            media_type="application/xml",
-        )
+        return Response(content=twiml, media_type="application/xml")
 
     async def handle_outgoing_call(request: Request) -> Response:
-        """Handle outgoing call webhook (when call is answered).
+        form, error = await _verify_request(request)
+        if error:
+            return error
+        assert form is not None
 
-        Returns TwiML to connect media stream.
-        """
+        call_sid = form.get("CallSid", "")
+        call_status = form.get("CallStatus", "")
+        from_number = form.get("From", "")
+        to_number = form.get("To", "")
+
+        logger.info(
+            "Outgoing call webhook: sid=%s status=%s from=%s to=%s",
+            call_sid,
+            call_status,
+            from_number,
+            to_number,
+        )
+
+        if not call_manager.get_call(call_sid):
+            call_manager.create_call(
+                call_sid=call_sid,
+                from_number=from_number,
+                to_number=to_number,
+            )
+
         try:
-            form = await request.form()
-            call_sid = form.get("CallSid", "")
-            call_status = form.get("CallStatus", "")
-            from_number = form.get("From", "")
-            to_number = form.get("To", "")
+            stream_url = _build_stream_url(request, webhook_base_url, security)
+        except Exception:
+            return PlainTextResponse("Webhook origin could not be resolved", status_code=400)
 
-            print(f"[VOICE] Outgoing call: {call_sid} status={call_status} from={from_number} to={to_number}")
-
-            # Create call state if not exists
-            if not call_manager.get_call(call_sid):
-                call_manager.create_call(
-                    call_sid=call_sid,
-                    from_number=from_number,
-                    to_number=to_number,
-                )
-
-            # Build media stream URL
-            stream_url = f"{webhook_base_url.replace('https://', 'wss://').replace('http://', 'ws://')}/media-stream"
-
-            twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
         <Stream url="{stream_url}">
@@ -108,29 +311,18 @@ def create_voice_app(
     </Connect>
 </Response>"""
 
-            print(f"[VOICE] Returning TwiML for call {call_sid} with stream URL {stream_url}")
-
-            return Response(
-                content=twiml,
-                media_type="application/xml",
-            )
-        except Exception as e:
-            print(f"[VOICE ERROR] handle_outgoing_call: {e}")
-            import traceback
-            traceback.print_exc()
-            # Return empty TwiML on error
-            return Response(
-                content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
-                media_type="application/xml",
-            )
+        return Response(content=twiml, media_type="application/xml")
 
     async def handle_call_status(request: Request) -> Response:
-        """Handle call status webhook."""
-        form = await request.form()
+        form, error = await _verify_request(request)
+        if error:
+            return error
+        assert form is not None
+
         call_sid = form.get("CallSid", "")
         call_status = form.get("CallStatus", "")
 
-        logger.info(f"Call status update: {call_sid} -> {call_status}")
+        logger.info("Call status update: %s -> %s", call_sid, call_status)
 
         if call_status in ("completed", "failed", "busy", "no-answer", "canceled"):
             await call_manager.handle_call_ended(call_sid)
@@ -138,7 +330,6 @@ def create_voice_app(
         return PlainTextResponse("OK")
 
     async def handle_media_stream(websocket: WebSocket):
-        """Handle Twilio Media Stream WebSocket connection."""
         await websocket.accept()
 
         stream_sid = None
@@ -149,50 +340,39 @@ def create_voice_app(
                 data = json.loads(message)
                 event = data.get("event")
 
-                # Log all events except media (too noisy)
                 if event != "media":
-                    print(f"[VOICE] WebSocket event: {event}")
-                    logger.info(f"WebSocket event: {event}, data keys: {list(data.keys())}")
+                    logger.info("WebSocket event: %s", event)
 
-                if event == "connected":
-                    logger.info("Media stream connected")
-
-                elif event == "start":
+                if event == "start":
                     stream_sid = data.get("streamSid")
                     start_data = data.get("start", {})
                     call_sid = start_data.get("customParameters", {}).get("callSid")
+                    logger.info("Media stream started: %s for call %s", stream_sid, call_sid)
 
-                    print(f"[VOICE] Stream started: stream_sid={stream_sid}, call_sid={call_sid}")
-                    print(f"[VOICE] Start data: {start_data}")
-                    logger.info(f"Media stream started: {stream_sid} for call {call_sid}")
+                    if stream_sid:
+                        call_manager.register_stream(stream_sid, websocket)
 
-                    # Register stream
-                    call_manager.register_stream(stream_sid, websocket)
-
-                    # Mark call as answered
-                    if call_sid:
+                    if call_sid and stream_sid:
                         await call_manager.handle_call_answered(call_sid, stream_sid)
 
                 elif event == "media":
                     media = data.get("media", {})
                     payload = media.get("payload", "")
-
                     if call_sid and payload:
                         await call_manager.handle_audio(call_sid, payload)
 
                 elif event == "stop":
-                    logger.info(f"Media stream stopped: {stream_sid}")
+                    logger.info("Media stream stopped: %s", stream_sid)
                     if call_sid:
                         await call_manager.handle_call_ended(call_sid)
 
         except Exception as e:
-            logger.error(f"Media stream error: {e}")
+            logger.error("Media stream error: %s", e)
         finally:
             if stream_sid:
                 call_manager.unregister_stream(stream_sid)
 
     async def health_check(request: Request) -> Response:
-        """Health check endpoint."""
         return PlainTextResponse("OK")
 
     routes = [
@@ -219,7 +399,7 @@ class TwilioClient:
         self.account_sid = account_sid
         self.auth_token = auth_token
         self.phone_number = phone_number
-        self.webhook_base_url = webhook_base_url
+        self.webhook_base_url = webhook_base_url.rstrip("/")
 
     async def make_call(
         self,
@@ -228,22 +408,14 @@ class TwilioClient:
         telegram_chat_id: str | None = None,
         pending_greeting: str | None = None,
     ) -> str:
-        """Initiate an outbound call.
-
-        Args:
-            to_number: Phone number to call
-            call_manager: Call manager instance
-            telegram_chat_id: Optional Telegram chat ID to link session
-            pending_greeting: Optional greeting to speak when call is answered
-
-        Returns:
-            Call SID
-        """
+        """Initiate an outbound call."""
         import httpx
+
+        if not self.webhook_base_url:
+            raise ValueError("integrations.voice.webhook_base_url must be configured")
 
         url = f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}/Calls.json"
 
-        # Use URL callback instead of inline TwiML so Twilio can pass CallSid
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 url,
@@ -263,7 +435,6 @@ class TwilioClient:
             result = response.json()
             call_sid = result["sid"]
 
-            # Create call state with pending greeting
             call_manager.create_call(
                 call_sid=call_sid,
                 from_number=self.phone_number,
@@ -272,18 +443,11 @@ class TwilioClient:
                 pending_greeting=pending_greeting,
             )
 
-            logger.info(f"Outbound call initiated: {call_sid} to {to_number}")
+            logger.info("Outbound call initiated: %s to %s", call_sid, to_number)
             return call_sid
 
     async def end_call(self, call_sid: str) -> bool:
-        """End an active call.
-
-        Args:
-            call_sid: Call SID to end
-
-        Returns:
-            True if successful
-        """
+        """End an active call."""
         import httpx
 
         url = f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}/Calls/{call_sid}.json"
@@ -296,8 +460,8 @@ class TwilioClient:
             )
 
             if response.status_code != 200:
-                logger.error(f"Failed to end call: {response.status_code} - {response.text}")
+                logger.error("Failed to end call: %s - %s", response.status_code, response.text)
                 return False
 
-            logger.info(f"Call ended via API: {call_sid}")
+            logger.info("Call ended via API: %s", call_sid)
             return True

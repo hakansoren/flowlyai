@@ -356,6 +356,13 @@ class CronTool(Tool):
                     return "Error: voice_call scheduled jobs must set tool_args.action='call'"
                 if not to_value:
                     return "Error: voice_call scheduled jobs must set tool_args.to (E.164 phone number)"
+                has_greeting = bool(str(tool_args.get("greeting", "")).strip())
+                has_script = bool(str(tool_args.get("script", "")).strip())
+                if not has_greeting and not has_script:
+                    tool_args["script"] = (
+                        "Merhaba, Flowly arıyor. Kısa bir bilgilendirme yapacağım. "
+                        "Müsaitsen şimdi paylaşabilirim."
+                    )
         elif not message:
             return "Error: 'message' is required for adding a job"
 
