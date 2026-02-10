@@ -755,7 +755,8 @@ Works on Linux, macOS, and Windows without external dependencies."""
             # Distribution
             code, output = await self._run_command("cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2")
             if code == 0 and output:
-                lines.append(f"**Distribution:** {output.strip().strip('\"')}")
+                distro = output.strip().strip('"')
+                lines.append(f"**Distribution:** {distro}")
         else:
             # macOS version
             code, output = await self._run_command("sw_vers -productVersion")

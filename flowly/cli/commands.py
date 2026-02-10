@@ -1210,6 +1210,7 @@ def gateway(
         exec_config=exec_config,
         trello_config=config.integrations.trello,
         voice_config=config.integrations.voice,
+        x_config=config.integrations.x,
         persona=active_persona,
     )
 
@@ -1511,6 +1512,7 @@ def agent(
         exec_config=exec_config,
         trello_config=config.integrations.trello,
         voice_config=config.integrations.voice,
+        x_config=config.integrations.x,
         persona=config.agents.defaults.persona,
     )
 

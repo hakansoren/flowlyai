@@ -53,6 +53,8 @@ class LiteLLMProvider(LLMProvider):
                 os.environ.setdefault("GEMINI_API_KEY", api_key)
             elif "zhipu" in default_model or "glm" in default_model or "zai" in default_model:
                 os.environ.setdefault("ZHIPUAI_API_KEY", api_key)
+            elif "xai" in default_model or "grok" in default_model:
+                os.environ.setdefault("XAI_API_KEY", api_key)
         
         if api_base:
             litellm.api_base = api_base

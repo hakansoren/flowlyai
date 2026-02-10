@@ -114,6 +114,7 @@ class ProvidersConfig(BaseModel):
     vllm: ProviderConfig = Field(default_factory=ProviderConfig)
     gemini: ProviderConfig = Field(default_factory=ProviderConfig)
     groq: ProviderConfig = Field(default_factory=ProviderConfig)  # For voice transcription
+    xai: ProviderConfig = Field(default_factory=ProviderConfig)  # xAI Grok models
 
 
 class GatewayConfig(BaseModel):
@@ -147,6 +148,15 @@ class TrelloConfig(BaseModel):
     """Trello integration configuration."""
     api_key: str = ""  # Get at https://trello.com/app-key
     token: str = ""  # Generate from the same page
+
+
+class XConfig(BaseModel):
+    """X (Twitter) API configuration."""
+    bearer_token: str = ""  # App-only Bearer Token (read operations)
+    api_key: str = ""  # OAuth 1.0a Consumer Key (write operations)
+    api_secret: str = ""  # OAuth 1.0a Consumer Secret
+    access_token: str = ""  # OAuth 1.0a Access Token
+    access_token_secret: str = ""  # OAuth 1.0a Access Token Secret
 
 
 class VoiceWebhookSecurityConfig(BaseModel):
@@ -203,6 +213,7 @@ class IntegrationsConfig(BaseModel):
     """External integrations configuration."""
     trello: TrelloConfig = Field(default_factory=TrelloConfig)
     voice: VoiceBridgeConfig = Field(default_factory=VoiceBridgeConfig)
+    x: XConfig = Field(default_factory=XConfig)
 
 
 class ToolsConfig(BaseModel):
@@ -226,11 +237,12 @@ class Config(BaseSettings):
         return Path(self.agents.defaults.workspace).expanduser()
     
     def get_api_key(self) -> str | None:
-        """Get API key in priority order: OpenRouter > Anthropic > OpenAI > Gemini > Zhipu > vLLM."""
+        """Get API key in priority order: OpenRouter > Anthropic > OpenAI > xAI > Gemini > Zhipu > vLLM."""
         return (
             self.providers.openrouter.api_key or
             self.providers.anthropic.api_key or
             self.providers.openai.api_key or
+            self.providers.xai.api_key or
             self.providers.gemini.api_key or
             self.providers.zhipu.api_key or
             self.providers.vllm.api_key or
@@ -238,9 +250,11 @@ class Config(BaseSettings):
         )
     
     def get_api_base(self) -> str | None:
-        """Get API base URL if using OpenRouter, Zhipu or vLLM."""
+        """Get API base URL if using OpenRouter, xAI, Zhipu or vLLM."""
         if self.providers.openrouter.api_key:
             return self.providers.openrouter.api_base or "https://openrouter.ai/api/v1"
+        if self.providers.xai.api_key:
+            return self.providers.xai.api_base or "https://api.x.ai/v1"
         if self.providers.zhipu.api_key:
             return self.providers.zhipu.api_base
         if self.providers.vllm.api_base:

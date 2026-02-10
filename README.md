@@ -28,16 +28,30 @@ You (Telegram) → Flowly (your Mac/PC) → tools, files, APIs → response
 
 ## Quick Start
 
+**Install with [uv](https://github.com/astral-sh/uv)** (recommended)
+
 ```bash
-# Install
+uv tool install flowly-ai
+```
+
+**Install from PyPI**
+
+```bash
+pip install flowly-ai
+```
+
+**Install from source** (development)
+
+```bash
 git clone https://github.com/hakansoren/flowlyai.git && cd flowlyai
-uv sync
+pip install -e .
+```
 
-# Setup
-uv run flowly onboard
+Then:
 
-# Chat
-uv run flowly agent -m "What can you do?"
+```bash
+flowly onboard                      # First-time setup
+flowly agent -m "What can you do?"  # Chat
 ```
 
 > **API keys:** Set your [OpenRouter](https://openrouter.ai/keys) key in `~/.flowly/config.json`. Optional: [Groq](https://console.groq.com/keys) (voice), [Brave Search](https://brave.com/search/api/) (web search).
@@ -80,6 +94,7 @@ uv run flowly agent -m "What can you do?"
 | **Cron** | Schedule recurring tasks |
 | **Docker** | Manage containers and images |
 | **Trello** | Create/manage boards and cards |
+| **X (Twitter)** | Post tweets, search, read timelines |
 | **System** | CPU, memory, disk, process info |
 | **Voice** | Make and receive phone calls |
 | **Spawn** | Run background sub-agents |
@@ -252,16 +267,26 @@ All config lives in `~/.flowly/config.json`:
 ```json
 {
   "providers": {
-    "openrouter": { "apiKey": "sk-or-v1-..." }
+    "openrouter": { "apiKey": "sk-or-v1-..." },
+    "xai": { "apiKey": "xai-..." }
   },
   "agents": {
     "defaults": { "model": "anthropic/claude-sonnet-4-5" }
   },
   "channels": {
     "telegram": { "enabled": true, "token": "..." }
+  },
+  "integrations": {
+    "x": {
+      "bearerToken": "AAAA...",
+      "apiKey": "...", "apiSecret": "...",
+      "accessToken": "...", "accessTokenSecret": "..."
+    }
   }
 }
 ```
+
+> **xAI/Grok:** Set `providers.xai.apiKey` and use `"model": "xai/grok-4"` to run Flowly with Grok.
 
 ## Requirements
 

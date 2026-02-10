@@ -32,7 +32,7 @@ from flowly.compaction.service import CompactionService
 from flowly.compaction.types import CompactionConfig, MemoryFlushConfig
 from flowly.compaction.estimator import estimate_messages_tokens
 from flowly.exec.types import ExecConfig
-from flowly.config.schema import TrelloConfig, VoiceBridgeConfig
+from flowly.config.schema import TrelloConfig, VoiceBridgeConfig, XConfig
 
 
 class AgentLoop:
@@ -63,6 +63,7 @@ class AgentLoop:
         exec_config: ExecConfig | None = None,
         trello_config: TrelloConfig | None = None,
         voice_config: VoiceBridgeConfig | None = None,
+        x_config: XConfig | None = None,
         persona: str = "default",
     ):
         self.bus = bus
@@ -99,6 +100,9 @@ class AgentLoop:
 
         # Trello config
         self.trello_config = trello_config
+
+        # X config
+        self.x_config = x_config
 
         # Voice config
         self.voice_config = voice_config
@@ -153,6 +157,17 @@ class AgentLoop:
             self.tools.register(TrelloTool(
                 api_key=self.trello_config.api_key,
                 token=self.trello_config.token,
+            ))
+
+        # X (Twitter) tool (if configured)
+        if self.x_config and (self.x_config.bearer_token or self.x_config.api_key):
+            from flowly.agent.tools.x import XTool
+            self.tools.register(XTool(
+                bearer_token=self.x_config.bearer_token,
+                api_key=self.x_config.api_key,
+                api_secret=self.x_config.api_secret,
+                access_token=self.x_config.access_token,
+                access_token_secret=self.x_config.access_token_secret,
             ))
 
         # Docker tool (always available, will error if Docker not installed)
