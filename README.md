@@ -310,10 +310,6 @@ uv run flowly gateway
 
 ---
 
-## 🤝 Credits
-
-Based on [nanobot](https://github.com/HKUDS/nanobot) by HKUDS.
-
 <p align="center">
   <em>Thanks for visiting ✨ Flowly!</em>
 </p>
