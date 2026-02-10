@@ -118,6 +118,7 @@ class TelegramChannel(BaseChannel):
 
     # Native bot commands
     NATIVE_COMMANDS = [
+        BotCommand("new", "Start a new conversation"),
         BotCommand("compact", "Summarize conversation history"),
         BotCommand("clear", "Clear session history"),
         BotCommand("help", "Show available commands"),
@@ -159,6 +160,7 @@ class TelegramChannel(BaseChannel):
         # Add command handlers
         self._app.add_handler(CommandHandler("start", self._on_start))
         self._app.add_handler(CommandHandler("compact", self._on_compact))
+        self._app.add_handler(CommandHandler("new", self._on_new))
         self._app.add_handler(CommandHandler("clear", self._on_clear))
         self._app.add_handler(CommandHandler("help", self._on_help))
 
@@ -478,14 +480,29 @@ class TelegramChannel(BaseChannel):
         else:
             await update.message.reply_text("⚠️ Compaction not available")
 
-    async def _on_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle /clear command."""
+    async def _on_new(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /new command — start a fresh session."""
         if not update.message or not update.effective_user:
             return
 
         chat_id = update.message.chat_id
 
-        # Forward as a special message to be handled by agent loop
+        await self._handle_message(
+            sender_id=str(update.effective_user.id),
+            chat_id=str(chat_id),
+            content="/new",
+            metadata={"is_command": True, "command": "new"}
+        )
+
+        await update.message.reply_text("✨ New conversation started")
+
+    async def _on_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /clear command — clear current session history."""
+        if not update.message or not update.effective_user:
+            return
+
+        chat_id = update.message.chat_id
+
         await self._handle_message(
             sender_id=str(update.effective_user.id),
             chat_id=str(chat_id),
@@ -502,6 +519,8 @@ class TelegramChannel(BaseChannel):
 
         await update.message.reply_text(
             "🐈 <b>Flowly Commands</b>\n\n"
+            "<b>/new</b>\n"
+            "Start a fresh conversation (keeps old history).\n\n"
             "<b>/compact</b> [instructions]\n"
             "Summarize conversation history to free up context space.\n"
             "Example: <code>/compact Focus on technical decisions</code>\n\n"

@@ -107,6 +107,20 @@ def setup_trello_cmd():
     setup_trello()
 
 
+@setup_app.command("discord")
+def setup_discord_cmd():
+    """Set up Discord bot."""
+    from flowly.cli.setup import setup_discord
+    setup_discord()
+
+
+@setup_app.command("slack")
+def setup_slack_cmd():
+    """Set up Slack bot."""
+    from flowly.cli.setup import setup_slack
+    setup_slack()
+
+
 # ============================================================================
 # Persona Commands
 # ============================================================================
@@ -2075,8 +2089,8 @@ def pairing_list(
     """List pending pairing requests."""
     from flowly.pairing import list_pairing_requests
 
-    if channel not in ("telegram", "whatsapp"):
-        console.print(f"[red]Invalid channel: {channel}. Use 'telegram' or 'whatsapp'[/red]")
+    if channel not in ("telegram", "whatsapp", "discord", "slack"):
+        console.print(f"[red]Invalid channel: {channel}. Use 'telegram', 'whatsapp', 'discord', or 'slack'[/red]")
         raise typer.Exit(1)
 
     requests = list_pairing_requests(channel)
@@ -2122,8 +2136,8 @@ def pairing_approve(
     from flowly.pairing import approve_pairing_code
     from flowly.config.loader import load_config
 
-    if channel not in ("telegram", "whatsapp"):
-        console.print(f"[red]Invalid channel: {channel}. Use 'telegram' or 'whatsapp'[/red]")
+    if channel not in ("telegram", "whatsapp", "discord", "slack"):
+        console.print(f"[red]Invalid channel: {channel}. Use 'telegram', 'whatsapp', 'discord', or 'slack'[/red]")
         raise typer.Exit(1)
 
     approved = approve_pairing_code(channel, code)
@@ -2167,8 +2181,8 @@ def pairing_revoke(
     """Revoke access for a user."""
     from flowly.pairing import remove_allow_from_entry
 
-    if channel not in ("telegram", "whatsapp"):
-        console.print(f"[red]Invalid channel: {channel}. Use 'telegram' or 'whatsapp'[/red]")
+    if channel not in ("telegram", "whatsapp", "discord", "slack"):
+        console.print(f"[red]Invalid channel: {channel}. Use 'telegram', 'whatsapp', 'discord', or 'slack'[/red]")
         raise typer.Exit(1)
 
     if remove_allow_from_entry(channel, user_id):
@@ -2184,8 +2198,8 @@ def pairing_allowed(
     """List allowed users from pairing store."""
     from flowly.pairing import read_allow_from_store
 
-    if channel not in ("telegram", "whatsapp"):
-        console.print(f"[red]Invalid channel: {channel}. Use 'telegram' or 'whatsapp'[/red]")
+    if channel not in ("telegram", "whatsapp", "discord", "slack"):
+        console.print(f"[red]Invalid channel: {channel}. Use 'telegram', 'whatsapp', 'discord', or 'slack'[/red]")
         raise typer.Exit(1)
 
     allowed = read_allow_from_store(channel)

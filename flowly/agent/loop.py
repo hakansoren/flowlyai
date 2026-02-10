@@ -952,7 +952,18 @@ class AgentLoop:
             return await self._process_system_message(msg)
         
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}")
-        
+
+        # Handle /new and /clear commands
+        is_command = msg.metadata.get("is_command", False)
+        command = msg.metadata.get("command", "")
+        if is_command and command in ("new", "clear"):
+            session = self.sessions.get_or_create(msg.session_key)
+            session.clear()
+            session.metadata["persona"] = self.context.persona
+            self.sessions.save(session)
+            logger.info(f"Session {msg.session_key} cleared via /{command}")
+            return None  # Telegram handler already sent confirmation
+
         # Get or create session
         session = self.sessions.get_or_create(msg.session_key)
         
@@ -973,6 +984,20 @@ class AgentLoop:
         voice_tool = self.tools.get("voice_call")
         if voice_tool and hasattr(voice_tool, "set_context"):
             voice_tool.set_context(msg.channel, msg.chat_id)
+
+        # Detect persona change and inject transition marker
+        current_persona = self.context.persona
+        session_persona = session.metadata.get("persona")
+        if session_persona and session_persona != current_persona and session.messages:
+            logger.info(f"Persona changed: {session_persona} → {current_persona}")
+            session.add_message(
+                "system",
+                f"[PERSONA CHANGE] The assistant's persona has been changed from "
+                f"'{session_persona}' to '{current_persona}'. From this point forward, "
+                f"respond strictly as the new persona. Ignore the style/tone of previous "
+                f"messages in this conversation."
+            )
+        session.metadata["persona"] = current_persona
 
         # Get history and check for compaction
         history = session.get_history(max_messages=self.context_messages)

@@ -136,7 +136,8 @@ class SessionManager:
     def save(self, session: Session) -> None:
         """Save a session to disk."""
         path = self._get_session_path(session.key)
-        
+        path.parent.mkdir(parents=True, exist_ok=True)
+
         with open(path, "w") as f:
             # Write metadata first
             metadata_line = {
