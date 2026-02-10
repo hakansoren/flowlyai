@@ -36,7 +36,7 @@ dependencies = [
     "uvicorn>=0.24.0",
     "audioop-lts>=0.2.0; python_version>='3.13'",
     "python-multipart>=0.0.6",
-    "simple-term-menu>=1.6.0",
+    "InquirerPy>=0.3.4",
     "pyngrok>=7.0.0",
     "slack-sdk>=3.26.0",
 ]

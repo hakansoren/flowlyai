@@ -691,7 +691,10 @@ def _get_module_statuses() -> list[tuple[str, str, str]]:
 def setup_all() -> None:
     """Run the interactive setup wizard with arrow-key module selection."""
     from flowly import __banner__, __version__
-    from simple_term_menu import TerminalMenu
+    try:
+        from InquirerPy import inquirer
+    except Exception:
+        inquirer = None
 
     console.print(f"[cyan]{__banner__.format(version=__version__)}[/cyan]")
     console.print("[bold]Setup Wizard[/bold]")
@@ -717,24 +720,45 @@ def setup_all() -> None:
         icon = "✓" if is_configured else "✗"
         # Extract detail text from rich markup
         detail = detail_rich.replace("[dim]", "").replace("[/dim]", "")
-        menu_entries.append(f"{label:<22} {icon} {detail}")
+        menu_entries.append(f"{label:<22} {icon} {detail}".strip())
 
-    menu_entries.append("Run all (full setup)")
-    menu_entries.append("Quit")
+    all_idx = len(modules)
+    quit_idx = len(modules) + 1
 
-    menu = TerminalMenu(
-        menu_entries,
-        title="Select a module to configure:",
-    )
+    selected: int | None
+    if inquirer is None:
+        console.print(
+            "[yellow]Interactive menu backend unavailable; using numbered prompts.[/yellow]"
+        )
+        numbered_entries = menu_entries + ["Run all (full setup)", "Quit"]
+        for idx, entry in enumerate(numbered_entries, start=1):
+            console.print(f"  [cyan]{idx}.[/cyan] {entry}")
 
-    selected = menu.show()
+        choice = Prompt.ask(
+            "Select a module to configure",
+            choices=[str(i) for i in range(1, len(numbered_entries) + 1)],
+            default=str(all_idx + 1),
+        )
+        selected = int(choice) - 1
+    else:
+        inquirer_choices = [{"name": entry, "value": idx} for idx, entry in enumerate(menu_entries)]
+        inquirer_choices.append({"name": "Run all (full setup)", "value": all_idx})
+        inquirer_choices.append({"name": "Quit", "value": quit_idx})
+
+        try:
+            selected = inquirer.select(
+                message="Select a module to configure:",
+                instruction="Use arrow keys to navigate, Enter to select",
+                choices=inquirer_choices,
+                default=all_idx,
+            ).execute()
+        except (KeyboardInterrupt, EOFError):
+            console.print("[dim]Setup cancelled.[/dim]")
+            return
 
     if selected is None:
         console.print("[dim]Setup cancelled.[/dim]")
         return
-
-    quit_idx = len(modules) + 1
-    all_idx = len(modules)
 
     if selected == quit_idx:
         console.print("[dim]Setup cancelled.[/dim]")
