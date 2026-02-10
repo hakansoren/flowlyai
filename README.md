@@ -254,6 +254,62 @@ uv run flowly gateway
 
 ---
 
+## Changelog
+
+<details>
+<summary><strong>2026-02-10</strong> — Discord & Slack channels, setup wizard</summary>
+
+- Discord and Slack channel implementations
+- Interactive CLI setup wizard (`flowly setup`)
+- Multi-channel manager support
+
+</details>
+
+<details>
+<summary><strong>2026-02-09</strong> — Service mode, personas, screenshot delegation</summary>
+
+- Background service mode (launchd/systemd/schtasks)
+- 8 built-in personas (Jarvis, Friday, Pirate, etc.)
+- Electron-delegated screenshot system
+- Voice call improvements
+
+</details>
+
+<details>
+<summary><strong>2026-02-06</strong> — Integrated voice system, new tools</summary>
+
+- Twilio voice bridge with real-time audio streaming
+- ElevenLabs, Deepgram, Groq Whisper STT/TTS providers
+- Agentic voice call state machine
+- System monitoring, Docker, Trello integration tools
+- Cross-platform support (Windows/macOS/Linux)
+
+</details>
+
+<details>
+<summary><strong>2026-02-04</strong> — Secure execution, pairing system</summary>
+
+- Secure command execution sandbox
+- Device pairing system
+- Interactive setup CLI wizard
+
+</details>
+
+<details>
+<summary><strong>2026-02-03</strong> — Initial release</summary>
+
+- Core agent loop with LiteLLM provider
+- Telegram and WhatsApp channels
+- Cron scheduling tool
+- Context compaction system
+- Groq Whisper voice transcription
+- Flowly Hub skill management
+- Rebranded from nanobot to Flowly
+
+</details>
+
+---
+
 ## 🤝 Credits
 
 Based on [nanobot](https://github.com/HKUDS/nanobot) by HKUDS.
