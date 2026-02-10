@@ -1,173 +1,98 @@
 <div align="center">
   <img src="flowly_logo.svg" alt="Flowly" width="150">
-  <h1>Flowly: Personal AI Assistant</h1>
+  <h1>Flowly AI</h1>
+  <p><strong>Your personal AI that runs locally, talks everywhere.</strong></p>
   <p>
-    <img src="https://img.shields.io/badge/python-≥3.11-blue" alt="Python">
+    <img src="https://img.shields.io/badge/python-≥3.11-3776AB?logo=python&logoColor=white" alt="Python">
+    <img src="https://img.shields.io/badge/platform-macOS%20·%20Linux%20·%20Windows-lightgrey" alt="Platform">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   </p>
 </div>
 
-🐈 **Flowly** is an **ultra-lightweight** personal AI assistant based on [nanobot](https://github.com/HKUDS/nanobot)
+---
 
-⚡️ Delivers core agent functionality in just **~4,000** lines of code.
+Flowly is a personal AI assistant that lives on your machine. Connect it to Telegram, WhatsApp, Discord, or Slack — then talk to it from anywhere. It can browse the web, manage files, run shell commands, take screenshots, schedule tasks, make phone calls, and more.
 
-## Key Features of Flowly:
-
-🪶 **Ultra-Lightweight**: Just ~4,000 lines of code - core functionality.
-
-🔬 **Research-Ready**: Clean, readable code that's easy to understand, modify, and extend for research.
-
-⚡️ **Lightning Fast**: Minimal footprint means faster startup, lower resource usage, and quicker iterations.
-
-💎 **Easy-to-Use**: One-click to deploy and you're ready to go.
-
-## 📦 Install
-
-### Prerequisites
-
-| Platform | Requirements |
-|----------|--------------|
-| **All** | Python ≥3.11, [uv](https://docs.astral.sh/uv/getting-started/installation/) |
-| **Windows** | Node.js ≥20 (for WhatsApp/Voice) |
-| **macOS/Linux** | Node.js ≥20 (for WhatsApp/Voice) |
-
-### Setup
-
-**macOS/Linux:**
-```bash
-git clone https://github.com/hakansoren/flowlyai.git
-cd flowlyai
-uv sync
+```
+You (Telegram) → Flowly (your Mac/PC) → tools, files, APIs → response
 ```
 
-**Windows (PowerShell):**
-```powershell
-git clone https://github.com/hakansoren/flowlyai.git
-cd flowlyai
-uv sync
-```
+## Why Flowly?
 
-> Flowly works seamlessly on Windows, macOS, and Linux.
+- **Runs on your machine** — your data stays local, your tools stay private
+- **Always on** — install as a background service, survives terminal close and reboot
+- **Multi-channel** — one agent, reachable from Telegram, WhatsApp, Discord, Slack
+- **Voice calls** — answer phone calls with Twilio, talk with real-time STT/TTS
+- **Extensible** — add tools, skills, personas, or entire channel adapters
+- **Cross-platform** — macOS (launchd), Linux (systemd), Windows (Task Scheduler)
 
-## 🚀 Quick Start
-
-> [!TIP]
-> Set your API key in `~/.flowly/config.json`.
-> Get API keys: [OpenRouter](https://openrouter.ai/keys) (LLM) · [Groq](https://console.groq.com/keys) (voice) · [Brave Search](https://brave.com/search/api/) (web search)
-
-**1. Initialize**
+## Quick Start
 
 ```bash
+# Install
+git clone https://github.com/hakansoren/flowlyai.git && cd flowlyai
+uv sync
+
+# Setup
 uv run flowly onboard
+
+# Chat
+uv run flowly agent -m "What can you do?"
 ```
 
-**2. Configure** (`~/.flowly/config.json`)
+> **API keys:** Set your [OpenRouter](https://openrouter.ai/keys) key in `~/.flowly/config.json`. Optional: [Groq](https://console.groq.com/keys) (voice), [Brave Search](https://brave.com/search/api/) (web search).
 
-```json
-{
-  "providers": {
-    "openrouter": {
-      "api_key": "sk-or-v1-xxx"
-    },
-    "groq": {
-      "api_key": "gsk_xxx"
-    }
-  },
-  "agents": {
-    "defaults": {
-      "model": "anthropic/claude-sonnet-4-5"
-    }
-  }
-}
+## Architecture
+
+```
+┌─────────────────────────────────────────────┐
+│                  Gateway                     │
+│                                              │
+│  ┌──────────┐  ┌──────────┐  ┌───────────┐  │
+│  │ Telegram │  │ WhatsApp │  │  Discord   │  │
+│  │  Slack   │  │  Voice   │  │   CLI      │  │
+│  └────┬─────┘  └────┬─────┘  └─────┬─────┘  │
+│       └──────────────┼──────────────┘        │
+│                      ▼                       │
+│              ┌──────────────┐                │
+│              │  Agent Loop  │                │
+│              │   (LiteLLM)  │                │
+│              └──────┬───────┘                │
+│                     ▼                        │
+│  ┌─────┐ ┌──────┐ ┌─────┐ ┌──────┐ ┌─────┐ │
+│  │Shell│ │ Web  │ │File │ │ Cron │ │ ... │ │
+│  └─────┘ └──────┘ └─────┘ └──────┘ └─────┘ │
+│                                              │
+│  ┌──────────────────────────────────────┐    │
+│  │  Skills · Personas · Hub · Memory    │    │
+│  └──────────────────────────────────────┘    │
+└─────────────────────────────────────────────┘
 ```
 
-**3. Chat**
+## Built-in Tools
 
-```bash
-uv run flowly agent -m "What is 2+2?"
-```
+| Tool | What it does |
+|------|-------------|
+| **Shell** | Run commands on your machine |
+| **Filesystem** | Read, write, edit, list files |
+| **Web** | Fetch URLs, search with Brave |
+| **Screenshot** | Capture your screen |
+| **Cron** | Schedule recurring tasks |
+| **Docker** | Manage containers and images |
+| **Trello** | Create/manage boards and cards |
+| **System** | CPU, memory, disk, process info |
+| **Voice** | Make and receive phone calls |
+| **Spawn** | Run background sub-agents |
 
-## Run In Background (Terminal Closed)
+## Channels
 
-Install a user service once and keep Flowly running after terminal closes:
-
-```bash
-flowly service install --start
-flowly service status
-```
-
-Manage lifecycle:
-
-```bash
-flowly service restart
-flowly service stop
-flowly service uninstall
-```
-
-| Platform | Backend |
-|----------|---------|
-| **macOS** | launchd (LaunchAgents) |
-| **Linux** | systemd (user service) |
-| **Windows** | Task Scheduler (schtasks) |
-
-This runs the full gateway stack in background (agent loop + channels + cron + voice plugin).
-
-## Personas
-
-Give your Flowly a unique personality! Choose from 8 built-in personas:
-
-| Persona | Style |
-|---------|-------|
-| `default` | Helpful and friendly (standard) |
-| `jarvis` | J.A.R.V.I.S. — refined British AI, dry wit |
-| `friday` | F.R.I.D.A.Y. — warm and professional |
-| `pirate` | Captain Flowly — "Aye aye, Captain!" |
-| `samurai` | Disciplined warrior, brief and wise |
-| `casual` | Your best buddy, relaxed and fun |
-| `professor` | Thorough explanations, step by step |
-| `butler` | Distinguished English butler, ultra-polite |
-
-**Set during install:**
-
-```bash
-flowly service install --start --persona jarvis
-```
-
-**Change anytime:**
-
-```bash
-flowly persona list          # See all available personas
-flowly persona set pirate    # Switch to pirate mode
-flowly persona show jarvis   # Preview a persona
-flowly service restart       # Apply the change
-```
-
-**Or pass directly to gateway:**
-
-```bash
-flowly gateway --persona professor
-```
-
-Personas only change how the bot talks — all tools, memory, and functionality stay the same. You can also create your own by adding a `.md` file to `~/.flowly/workspace/personas/`.
-
-## 💬 Chat Apps
-
-Talk to your Flowly through Telegram or WhatsApp — anytime, anywhere.
-
-| Channel | Setup |
-|---------|-------|
-| **Telegram** | Easy (just a token) |
-| **WhatsApp** | Medium (scan QR) |
+Connect Flowly to your favorite chat apps. Each channel runs simultaneously through the gateway.
 
 <details>
-<summary><b>Telegram</b> (Recommended)</summary>
+<summary><b>Telegram</b> — easiest setup</summary>
 
-**1. Create a bot**
-- Open Telegram, search `@BotFather`
-- Send `/newbot`, follow prompts
-- Copy the token
-
-**2. Configure**
+1. Create a bot via `@BotFather` on Telegram
+2. Add to config:
 
 ```json
 {
@@ -181,29 +106,19 @@ Talk to your Flowly through Telegram or WhatsApp — anytime, anywhere.
 }
 ```
 
-> Get your user ID from `@userinfobot` on Telegram.
+3. `uv run flowly gateway`
 
-**3. Run**
-
-```bash
-uv run flowly gateway
-```
+> Get your user ID from `@userinfobot`.
 
 </details>
 
 <details>
-<summary><b>WhatsApp</b></summary>
-
-Requires **Node.js ≥18**.
-
-**1. Link device**
+<summary><b>WhatsApp</b> — scan QR</summary>
 
 ```bash
-uv run flowly channels login
-# Scan QR with WhatsApp → Settings → Linked Devices
+uv run flowly channels login    # Scan QR code
+uv run flowly gateway           # Start (in another terminal)
 ```
-
-**2. Configure**
 
 ```json
 {
@@ -216,41 +131,150 @@ uv run flowly channels login
 }
 ```
 
-**3. Run** (two terminals)
+Requires Node.js ≥18.
 
-```bash
-# Terminal 1
-uv run flowly channels login
+</details>
 
-# Terminal 2
-uv run flowly gateway
+<details>
+<summary><b>Discord</b></summary>
+
+```json
+{
+  "channels": {
+    "discord": {
+      "enabled": true,
+      "token": "YOUR_BOT_TOKEN",
+      "allowFrom": ["YOUR_USER_ID"]
+    }
+  }
+}
 ```
 
 </details>
 
+<details>
+<summary><b>Slack</b></summary>
+
+```json
+{
+  "channels": {
+    "slack": {
+      "enabled": true,
+      "botToken": "xoxb-...",
+      "appToken": "xapp-...",
+      "allowFrom": ["U1234567890"]
+    }
+  }
+}
+```
+
+</details>
+
+## Background Service
+
+Run Flowly as a persistent service — survives terminal close and auto-starts on boot:
+
+```bash
+flowly service install --start    # Install and start
+flowly service status             # Health check
+flowly service logs -f            # Follow logs
+flowly service restart            # Restart
+flowly service stop               # Stop
+flowly service uninstall          # Remove
+```
+
+| Platform | Backend |
+|----------|---------|
+| macOS | launchd (LaunchAgents) |
+| Linux | systemd (user service) |
+| Windows | Task Scheduler |
+
+## Personas
+
+Switch how Flowly talks without changing functionality:
+
+```bash
+flowly persona list              # See all
+flowly persona set jarvis        # Switch persona
+flowly service restart           # Apply
+```
+
+| Persona | Style |
+|---------|-------|
+| `default` | Helpful and friendly |
+| `jarvis` | J.A.R.V.I.S. — British AI, dry wit |
+| `friday` | F.R.I.D.A.Y. — warm, professional |
+| `pirate` | "Aye aye, Captain!" |
+| `samurai` | Brief and wise |
+| `casual` | Your best buddy |
+| `professor` | Step-by-step explanations |
+| `butler` | Distinguished, ultra-polite |
+
+Create your own: drop a `.md` file in `~/.flowly/workspace/personas/`.
+
+## Voice Calls
+
+Flowly can answer and make phone calls with real-time speech:
+
+```bash
+flowly setup voice-calls         # Configure Twilio + STT/TTS
+flowly gateway                   # Start with voice enabled
+```
+
+**Supported providers:**
+- **STT:** Groq Whisper, Deepgram, ElevenLabs
+- **TTS:** ElevenLabs, Deepgram, OpenAI
+- **Telephony:** Twilio
+
 ## CLI Reference
 
-| Command | Description |
-|---------|-------------|
-| `flowly onboard` | Initialize config & workspace |
-| `flowly agent -m "..."` | Chat with the agent |
-| `flowly agent` | Interactive chat mode |
-| `flowly gateway` | Start the gateway |
-| `flowly gateway --persona jarvis` | Start gateway with a persona |
-| `flowly service install --start` | Install/start background service |
-| `flowly service install --persona pirate` | Install service with a persona |
-| `flowly service status` | Check background service health |
-| `flowly service logs -f` | Follow background service logs live |
-| `flowly service restart` | Restart background service |
-| `flowly persona list` | List available personas |
-| `flowly persona set <name>` | Set active persona |
-| `flowly persona show <name>` | Preview a persona |
-| `flowly status` | Show status |
-| `flowly setup voice-calls` | Configure integrated Twilio voice plugin |
-| `flowly channels login` | Link WhatsApp (scan QR) |
-| `flowly channels status` | Show channel status |
+```
+flowly onboard                   Initialize config & workspace
+flowly agent -m "..."            Send a message
+flowly agent                     Interactive chat
+flowly gateway                   Start the gateway (all channels)
+flowly gateway --persona jarvis  Start with a persona
+flowly service install --start   Install background service
+flowly service status            Service health check
+flowly service logs -f           Follow logs
+flowly persona list              List personas
+flowly persona set <name>        Switch persona
+flowly setup voice-calls         Configure voice
+flowly channels login            Link WhatsApp
+flowly channels status           Channel status
+flowly status                    Overall status
+```
 
-> On Windows, use `uv run flowly <command>` or add the script to your PATH.
+## Configuration
+
+All config lives in `~/.flowly/config.json`:
+
+```json
+{
+  "providers": {
+    "openrouter": { "apiKey": "sk-or-v1-..." }
+  },
+  "agents": {
+    "defaults": { "model": "anthropic/claude-sonnet-4-5" }
+  },
+  "channels": {
+    "telegram": { "enabled": true, "token": "..." }
+  }
+}
+```
+
+## Requirements
+
+| | Minimum |
+|---|---|
+| **Python** | ≥ 3.11 |
+| **uv** | Any recent version |
+| **Node.js** | ≥ 18 (only for WhatsApp bridge) |
+| **OS** | macOS, Linux, or Windows |
+
+## Desktop App
+
+[Flowly Desktop](https://github.com/hakansoren/flowly-desktop) — Electron app with guided setup, one-click install, and visual management.
 
 ---
 
@@ -300,16 +324,14 @@ uv run flowly gateway
 
 - Core agent loop with LiteLLM provider
 - Telegram and WhatsApp channels
-- Cron scheduling tool
-- Context compaction system
+- Cron scheduling, context compaction
 - Groq Whisper voice transcription
 - Flowly Hub skill management
-- Rebranded from nanobot to Flowly
 
 </details>
 
 ---
 
 <p align="center">
-  <em>Thanks for visiting ✨ Flowly!</em>
+  <sub>MIT License</sub>
 </p>
