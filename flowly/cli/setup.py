@@ -454,6 +454,173 @@ def setup_voice_calls() -> bool:
     return True
 
 
+async def validate_discord_token(token: str) -> dict | None:
+    """Validate a Discord bot token by calling /users/@me."""
+    url = "https://discord.com/api/v10/users/@me"
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                url, headers={"Authorization": f"Bot {token}"}, timeout=10
+            )
+            if response.status_code == 200:
+                return response.json()
+    except Exception:
+        pass
+    return None
+
+
+def setup_discord() -> bool:
+    """
+    Interactive Discord bot setup wizard.
+
+    Returns True if setup was successful.
+    """
+    from flowly.config.loader import load_config, save_config
+
+    console.print("\n[bold cyan]Discord Bot Setup[/bold cyan]")
+    console.print("-" * 40)
+
+    config = load_config()
+    current_token = config.channels.discord.token
+
+    if current_token:
+        bot_info = asyncio.run(validate_discord_token(current_token))
+        if bot_info:
+            console.print(f"\n[green]✓[/green] Already configured: {bot_info.get('username')}")
+            if not Confirm.ask("Reconfigure?", default=False):
+                return True
+
+    console.print("\n[dim]To create a Discord bot:[/dim]")
+    console.print("  1. Go to [cyan]https://discord.com/developers/applications[/cyan]")
+    console.print("  2. Click [cyan]New Application[/cyan], give it a name")
+    console.print("  3. Go to [cyan]Bot[/cyan] tab, click [cyan]Reset Token[/cyan] and copy it")
+    console.print("  4. Enable [cyan]Message Content Intent[/cyan] under Privileged Gateway Intents")
+    console.print("  5. Go to [cyan]OAuth2 > URL Generator[/cyan], select [cyan]bot[/cyan] scope")
+    console.print("     and [cyan]Send Messages + Read Message History[/cyan] permissions")
+    console.print("  6. Copy the generated URL and open it to invite the bot to your server")
+    console.print()
+
+    token = Prompt.ask("Enter bot token").strip()
+
+    if not token:
+        console.print("[red]No token provided[/red]")
+        return False
+
+    console.print("\n[dim]Validating token...[/dim]")
+    bot_info = asyncio.run(validate_discord_token(token))
+
+    if not bot_info:
+        console.print("[red]✗ Invalid token[/red]")
+        return False
+
+    bot_username = bot_info.get("username", "unknown")
+    console.print(f"[green]✓[/green] Valid! Bot: [cyan]{bot_username}[/cyan]")
+
+    config.channels.discord.enabled = True
+    config.channels.discord.token = token
+    save_config(config)
+    console.print("[green]✓[/green] Saved to config")
+
+    console.print("\n[green]✓ Discord setup complete![/green]")
+    console.print(f"\nStart the bot with: [cyan]flowly gateway[/cyan]")
+
+    return True
+
+
+async def validate_slack_tokens(bot_token: str) -> dict | None:
+    """Validate Slack bot token via auth.test."""
+    url = "https://slack.com/api/auth.test"
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {bot_token}"},
+                timeout=10,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("ok"):
+                    return data
+    except Exception:
+        pass
+    return None
+
+
+def setup_slack() -> bool:
+    """
+    Interactive Slack bot setup wizard.
+
+    Returns True if setup was successful.
+    """
+    from flowly.config.loader import load_config, save_config
+
+    console.print("\n[bold cyan]Slack Bot Setup[/bold cyan]")
+    console.print("-" * 40)
+
+    config = load_config()
+    current_bot_token = config.channels.slack.bot_token
+
+    if current_bot_token:
+        auth_info = asyncio.run(validate_slack_tokens(current_bot_token))
+        if auth_info:
+            console.print(f"\n[green]✓[/green] Already configured: {auth_info.get('user', 'bot')}")
+            if not Confirm.ask("Reconfigure?", default=False):
+                return True
+
+    console.print("\n[dim]To create a Slack app:[/dim]")
+    console.print("  1. Go to [cyan]https://api.slack.com/apps[/cyan]")
+    console.print("  2. Click [cyan]Create New App > From scratch[/cyan]")
+    console.print("  3. Under [cyan]Socket Mode[/cyan], enable it and create an app token (xapp-)")
+    console.print("  4. Under [cyan]OAuth & Permissions[/cyan], add bot scopes:")
+    console.print("     [dim]chat:write, app_mentions:read, im:history, channels:history, reactions:write[/dim]")
+    console.print("  5. Install to workspace and copy the [cyan]Bot User OAuth Token[/cyan] (xoxb-)")
+    console.print("  6. Under [cyan]Event Subscriptions[/cyan], subscribe to:")
+    console.print("     [dim]message.im, app_mention[/dim]")
+    console.print()
+
+    bot_token = Prompt.ask("Enter Bot User OAuth Token (xoxb-)").strip()
+    if not bot_token:
+        console.print("[yellow]Skipped - Slack disabled[/yellow]")
+        return True
+
+    console.print("\n[dim]Validating bot token...[/dim]")
+    auth_info = asyncio.run(validate_slack_tokens(bot_token))
+    if not auth_info:
+        console.print("[red]✗ Invalid bot token[/red]")
+        return False
+
+    bot_name = auth_info.get("user", "unknown")
+    console.print(f"[green]✓[/green] Valid! Bot: [cyan]{bot_name}[/cyan]")
+
+    app_token = Prompt.ask("Enter App-Level Token (xapp-)").strip()
+    if not app_token:
+        console.print("[red]App token is required for Socket Mode[/red]")
+        return False
+
+    # Group policy
+    console.print("\n[bold]Group/Channel Response Policy:[/bold]")
+    console.print("  [cyan]1.[/cyan] mention   - Respond only when @mentioned [dim](recommended)[/dim]")
+    console.print("  [cyan]2.[/cyan] open      - Respond to all messages in channels")
+    console.print("  [cyan]3.[/cyan] allowlist - Only respond in specific channels")
+
+    policy_choice = Prompt.ask("Choose policy", choices=["1", "2", "3"], default="1")
+    policy_map = {"1": "mention", "2": "open", "3": "allowlist"}
+    group_policy = policy_map[policy_choice]
+
+    config.channels.slack.enabled = True
+    config.channels.slack.bot_token = bot_token
+    config.channels.slack.app_token = app_token
+    config.channels.slack.group_policy = group_policy
+    save_config(config)
+    console.print("[green]✓[/green] Saved to config")
+
+    console.print("\n[green]✓ Slack setup complete![/green]")
+    console.print(f"\nStart the bot with: [cyan]flowly gateway[/cyan]")
+    console.print("[dim]No public URL needed - Socket Mode connects outbound.[/dim]")
+
+    return True
+
+
 def _get_module_statuses() -> list[tuple[str, str, str]]:
     """Get configuration status for each setup module.
 
@@ -503,6 +670,21 @@ def _get_module_statuses() -> list[tuple[str, str, str]]:
     else:
         statuses.append(("Trello", "[red]✗[/red]", "[dim]not configured[/dim]"))
 
+    # 6. Discord Bot
+    discord_token = config.channels.discord.token
+    if discord_token:
+        masked = discord_token[:8] + "..."
+        statuses.append(("Discord Bot", "[green]✓[/green]", f"[dim]{masked}[/dim]"))
+    else:
+        statuses.append(("Discord Bot", "[red]✗[/red]", "[dim]not configured[/dim]"))
+
+    # 7. Slack Bot
+    slack_token = config.channels.slack.bot_token
+    if slack_token and config.channels.slack.app_token:
+        statuses.append(("Slack Bot", "[green]✓[/green]", f"[dim]{config.channels.slack.group_policy}[/dim]"))
+    else:
+        statuses.append(("Slack Bot", "[red]✗[/red]", "[dim]not configured[/dim]"))
+
     return statuses
 
 
@@ -522,6 +704,8 @@ def setup_all() -> None:
         ("Voice Transcription", setup_voice),
         ("Voice Calls", setup_voice_calls),
         ("Trello", setup_trello),
+        ("Discord Bot", setup_discord),
+        ("Slack Bot", setup_slack),
     ]
 
     # Build menu entries with status indicators
