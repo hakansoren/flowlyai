@@ -109,12 +109,12 @@ class SessionManager:
             metadata = {}
             created_at = None
             
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
                         continue
-                    
+
                     data = json.loads(line)
                     
                     if data.get("_type") == "metadata":
@@ -138,7 +138,7 @@ class SessionManager:
         path = self._get_session_path(session.key)
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
             # Write metadata first
             metadata_line = {
                 "_type": "metadata",
@@ -186,7 +186,7 @@ class SessionManager:
         for path in self.sessions_dir.glob("*.jsonl"):
             try:
                 # Read just the metadata line
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     first_line = f.readline().strip()
                     if first_line:
                         data = json.loads(first_line)

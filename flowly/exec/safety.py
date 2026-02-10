@@ -1,5 +1,6 @@
 """Command safety analysis and validation."""
 
+import platform
 import re
 import shlex
 import shutil
@@ -18,8 +19,8 @@ SHELL_METACHARS = re.compile(r'[;&|`$<>]')
 CONTROL_CHARS = re.compile(r'[\r\n\x00]')
 QUOTE_CHARS = re.compile(r'["\']')
 
-# Patterns for dangerous commands
-DANGEROUS_PATTERNS = [
+# Patterns for dangerous commands (Unix)
+_UNIX_DANGEROUS_PATTERNS = [
     re.compile(r'\brm\s+(-[rf]+\s+)*/', re.IGNORECASE),  # rm -rf /
     re.compile(r'\bsudo\b', re.IGNORECASE),
     re.compile(r'\bchmod\s+777', re.IGNORECASE),
@@ -31,6 +32,26 @@ DANGEROUS_PATTERNS = [
     re.compile(r'\bwget\b.*\|\s*(ba)?sh', re.IGNORECASE),  # wget | sh
     re.compile(r':(){.*};:', re.IGNORECASE),  # Fork bomb
 ]
+
+# Patterns for dangerous commands (Windows)
+_WINDOWS_DANGEROUS_PATTERNS = [
+    re.compile(r'\bformat\b\s+[a-z]:', re.IGNORECASE),  # format C:
+    re.compile(r'\bdiskpart\b', re.IGNORECASE),
+    re.compile(r'\breg\b\s+delete', re.IGNORECASE),  # reg delete
+    re.compile(r'\bcipher\b\s+/w', re.IGNORECASE),  # cipher /w (wipe)
+    re.compile(r'\bdel\b\s+/[sfq]', re.IGNORECASE),  # del /s /f /q
+    re.compile(r'\brd\b\s+/s', re.IGNORECASE),  # rd /s (recursive delete)
+    re.compile(r'\brmdir\b\s+/s', re.IGNORECASE),  # rmdir /s
+    re.compile(r'\bnet\b\s+user\b.*\b/delete\b', re.IGNORECASE),  # net user /delete
+    re.compile(r'\bbcdedit\b', re.IGNORECASE),  # boot config
+    re.compile(r'\brunas\b\s+/user:administrator', re.IGNORECASE),
+]
+
+DANGEROUS_PATTERNS = (
+    _UNIX_DANGEROUS_PATTERNS + _WINDOWS_DANGEROUS_PATTERNS
+    if platform.system() == "Windows"
+    else _UNIX_DANGEROUS_PATTERNS
+)
 
 # Pipeline operators that are not allowed in allowlist mode
 DISALLOWED_PIPELINE_OPS = {'||', '|&', '`', '$(', '\n', '\r', '(', ')'}
@@ -87,7 +108,7 @@ def is_safe_bin(executable: str, args: list[str]) -> bool:
         if arg.startswith('-'):
             continue
         # Check if arg looks like a path
-        if '/' in arg or arg.startswith('~'):
+        if '/' in arg or '\\' in arg or arg.startswith('~'):
             return False
         # Check if arg is an existing file
         if Path(arg).exists():

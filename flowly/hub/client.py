@@ -145,12 +145,21 @@ class HubClient:
             content_type = resp.headers.get("content-type", "")
 
             if "application/gzip" in content_type or skill.download_url.endswith(".tar.gz"):
-                # Extract tarball
+                # Extract tarball with path traversal protection
+                import sys
                 import tarfile
                 import io
 
                 with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
-                    tar.extractall(skill_dir)
+                    if sys.version_info >= (3, 12):
+                        tar.extractall(skill_dir, filter="data")
+                    else:
+                        # Manual safety check for Python < 3.12
+                        for member in tar.getmembers():
+                            member_path = (skill_dir / member.name).resolve()
+                            if not str(member_path).startswith(str(skill_dir.resolve())):
+                                raise ValueError(f"Tar member {member.name} escapes target dir")
+                        tar.extractall(skill_dir)
             else:
                 # Single SKILL.md file
                 (skill_dir / "SKILL.md").write_bytes(resp.content)
@@ -162,7 +171,7 @@ class HubClient:
                 "version": skill.version,
                 "installed_from": skill.download_url,
                 "hash": skill.hash,
-            }, indent=2))
+            }, indent=2), encoding="utf-8")
 
             logger.info(f"Downloaded skill: {skill.slug} v{skill.version}")
             return skill_dir
@@ -209,7 +218,7 @@ class HubClient:
 
                 skill_dir = target_dir / skill_name
                 skill_dir.mkdir(parents=True, exist_ok=True)
-                (skill_dir / "SKILL.md").write_text(resp.text)
+                (skill_dir / "SKILL.md").write_text(resp.text, encoding="utf-8")
 
                 # Try to download additional files (scripts/, references/)
                 self._download_github_extras(repo, branch, path, skill_name, skill_dir)

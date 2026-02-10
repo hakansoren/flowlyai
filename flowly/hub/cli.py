@@ -341,7 +341,7 @@ Show more complex use cases.
 
 - Important considerations
 - Known limitations
-''')
+''', encoding="utf-8")
 
     # Create optional directories
     (skill_dir / "scripts").mkdir(exist_ok=True)
@@ -355,7 +355,7 @@ Put helper scripts here. They will be available to the agent.
 Example:
 - setup.sh - Initial setup script
 - check.sh - Health check script
-''')
+''', encoding="utf-8")
 
     console.print(f"[green]✓[/green] Created skill template at [cyan]{skill_dir}[/cyan]")
     console.print("\nFiles created:")

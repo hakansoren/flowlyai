@@ -32,7 +32,7 @@ def load_config(config_path: Path | None = None) -> Config:
     
     if path.exists():
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             return Config.model_validate(convert_keys(data))
         except (json.JSONDecodeError, ValueError) as e:
@@ -57,7 +57,7 @@ def save_config(config: Config, config_path: Path | None = None) -> None:
     data = config.model_dump()
     data = convert_to_camel(data)
     
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
 

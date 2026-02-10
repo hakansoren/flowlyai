@@ -70,7 +70,7 @@ class ExecApprovalStore:
 
         try:
             with FileLock(path.with_suffix(".lock"), timeout=10):
-                data = json.loads(path.read_text())
+                data = json.loads(path.read_text(encoding="utf-8"))
                 allowlist = [
                     AllowlistEntry(
                         pattern=e.get("pattern", ""),
@@ -118,7 +118,7 @@ class ExecApprovalStore:
         }
 
         with FileLock(path.with_suffix(".lock"), timeout=10):
-            path.write_text(json.dumps(data, indent=2) + "\n")
+            path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
     @property
     def config(self) -> ExecApprovalsConfig:

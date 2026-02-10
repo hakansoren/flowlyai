@@ -271,7 +271,7 @@ class SkillManager:
 
             skill_dir = target_dir / slug
             skill_dir.mkdir(parents=True, exist_ok=True)
-            (skill_dir / "SKILL.md").write_text(resp.text)
+            (skill_dir / "SKILL.md").write_text(resp.text, encoding="utf-8")
 
             # Create metadata
             self._write_meta(skill_dir, {
@@ -467,12 +467,12 @@ class SkillManager:
         meta = {}
         if meta_file.exists():
             try:
-                meta = json.loads(meta_file.read_text())
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
                 pass
 
         # Parse frontmatter from SKILL.md
-        content = skill_file.read_text()
+        content = skill_file.read_text(encoding="utf-8")
         frontmatter = self._parse_frontmatter(content)
 
         # Calculate current hash
@@ -510,7 +510,7 @@ class SkillManager:
     def _write_meta(self, skill_dir: Path, meta: dict) -> None:
         """Write skill metadata file."""
         meta_file = skill_dir / self.META_FILE
-        meta_file.write_text(json.dumps(meta, indent=2))
+        meta_file.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     def close(self):
         """Close the hub client."""

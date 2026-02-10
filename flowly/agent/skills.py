@@ -2,6 +2,7 @@
 
 import json
 import os
+import platform
 import re
 import shutil
 from pathlib import Path
@@ -197,7 +198,15 @@ class SkillsLoader:
             return {}
     
     def _check_requirements(self, skill_meta: dict) -> bool:
-        """Check if skill requirements are met (bins, env vars)."""
+        """Check if skill requirements are met (bins, env vars, OS)."""
+        # Check OS compatibility
+        supported_os = skill_meta.get("os", [])
+        if supported_os:
+            current_os = platform.system().lower()
+            os_map = {"windows": "windows", "darwin": "darwin", "linux": "linux"}
+            if os_map.get(current_os, current_os) not in supported_os:
+                return False
+
         requires = skill_meta.get("requires", {})
         for b in requires.get("bins", []):
             if not shutil.which(b):

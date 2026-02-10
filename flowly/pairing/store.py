@@ -1,6 +1,7 @@
 """Pairing store for secure channel authorization."""
 
 import json
+import os
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -50,7 +51,7 @@ def _read_json_file(path: Path, default: dict) -> dict:
     """Safely read a JSON file."""
     try:
         if path.exists():
-            return json.loads(path.read_text())
+            return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, IOError) as e:
         logger.warning(f"Error reading {path}: {e}")
     return default
@@ -60,9 +61,12 @@ def _write_json_file(path: Path, data: dict) -> None:
     """Safely write a JSON file with atomic rename."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(f".{secrets.token_hex(4)}.tmp")
-    tmp_path.write_text(json.dumps(data, indent=2) + "\n")
-    tmp_path.chmod(0o600)
-    tmp_path.rename(path)
+    tmp_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    try:
+        tmp_path.chmod(0o600)
+    except OSError:
+        pass  # chmod not effective on Windows NTFS
+    os.replace(str(tmp_path), str(path))
 
 
 def _generate_code(existing_codes: set[str]) -> str:

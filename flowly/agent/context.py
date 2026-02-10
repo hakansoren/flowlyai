@@ -2,6 +2,7 @@
 
 import base64
 import mimetypes
+import platform
 from pathlib import Path
 from typing import Any
 
@@ -130,16 +131,7 @@ When textual instructions conflict with a tool schema, follow the tool schema.
 
 The exec tool can run ANY shell command on the computer:
 
-**Opening Applications (macOS):**
-- "Open Chrome" → exec(command="open -a 'Google Chrome'")
-- "Open YouTube" → exec(command="open https://youtube.com")
-- "Open Safari" → exec(command="open -a Safari")
-- "Open Finder" → exec(command="open -a Finder")
-- "Open Terminal" → exec(command="open -a Terminal")
-
-**System Commands:**
-- "Volume up/down" → exec(command="osascript -e 'set volume output volume 50'")
-- "Close app" → exec(command="pkill -x 'App Name'")
+{self._get_exec_examples()}
 
 Do not use `exec` unless it is actually needed for the task.
 
@@ -336,6 +328,38 @@ For normal conversation, just respond with text - do not call the message tool.
 Always be helpful, accurate, and concise. When using tools, explain what you're doing.
 When remembering something, write to {workspace_path}/memory/MEMORY.md"""
     
+    def _get_exec_examples(self) -> str:
+        """Get platform-appropriate exec tool examples."""
+        if platform.system() == "Windows":
+            return """**Opening Applications (Windows):**
+- "Open Chrome" → exec(command="start chrome")
+- "Open YouTube" → exec(command="start https://youtube.com")
+- "Open Notepad" → exec(command="start notepad")
+- "Open Explorer" → exec(command="start explorer")
+
+**System Commands:**
+- "Volume up/down" → exec(command="powershell (New-Object -ComObject WScript.Shell).SendKeys([char]175)")
+- "Close app" → exec(command="taskkill /im app.exe /f")"""
+        elif platform.system() == "Linux":
+            return """**Opening Applications (Linux):**
+- "Open Chrome" → exec(command="xdg-open https://google.com")
+- "Open YouTube" → exec(command="xdg-open https://youtube.com")
+- "Open file manager" → exec(command="xdg-open .")
+
+**System Commands:**
+- "Close app" → exec(command="pkill -x 'App Name'")"""
+        else:
+            return """**Opening Applications (macOS):**
+- "Open Chrome" → exec(command="open -a 'Google Chrome'")
+- "Open YouTube" → exec(command="open https://youtube.com")
+- "Open Safari" → exec(command="open -a Safari")
+- "Open Finder" → exec(command="open -a Finder")
+- "Open Terminal" → exec(command="open -a Terminal")
+
+**System Commands:**
+- "Volume up/down" → exec(command="osascript -e 'set volume output volume 50'")
+- "Close app" → exec(command="pkill -x 'App Name'")"""
+
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace, substituting persona for SOUL.md."""
         parts = []

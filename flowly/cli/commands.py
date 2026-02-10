@@ -20,6 +20,10 @@ from rich.table import Table
 
 from flowly import __version__, __logo__
 
+# Windows needs SelectorEventLoop for uvicorn/aiohttp compatibility
+if platform.system() == "Windows":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 
 def get_npm_command() -> str:
     """Get the correct npm command for the current platform."""
@@ -520,8 +524,13 @@ def service_install(
         out_log = str(log_dir / "flowly-gateway.out.log")
         err_log = str(log_dir / "flowly-gateway.err.log")
 
+        # Escape XML special characters in dynamic values
+        def _xml_escape(s: str) -> str:
+            return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
         # Use cmd /c wrapper to redirect stdout/stderr to log files
         wrapper_args = f'/c "{command}" {arguments} > "{out_log}" 2> "{err_log}"'
+        working_dir = str(Path.cwd())
 
         task_xml = textwrap.dedent(
             f"""\
@@ -552,7 +561,7 @@ def service_install(
                 <Enabled>true</Enabled>
                 <Hidden>false</Hidden>
                 <RestartOnFailure>
-                  <Interval>PT3S</Interval>
+                  <Interval>PT1M</Interval>
                   <Count>10</Count>
                 </RestartOnFailure>
                 <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
@@ -560,8 +569,8 @@ def service_install(
               <Actions Context="Author">
                 <Exec>
                   <Command>cmd.exe</Command>
-                  <Arguments>{wrapper_args}</Arguments>
-                  <WorkingDirectory>{Path.cwd()}</WorkingDirectory>
+                  <Arguments>{_xml_escape(wrapper_args)}</Arguments>
+                  <WorkingDirectory>{_xml_escape(working_dir)}</WorkingDirectory>
                 </Exec>
               </Actions>
             </Task>
@@ -607,6 +616,9 @@ def service_start(
             console.print(f"[green]✓[/green] Started service {label}")
             return
         if system == "windows":
+            if win_xml and not win_xml.exists():
+                console.print("[red]Service not installed. Run 'flowly service install' first.[/red]")
+                raise typer.Exit(1)
             _run_cmd(["schtasks", "/run", "/tn", label])
             console.print(f"[green]✓[/green] Started service {label}")
             return
@@ -1039,7 +1051,7 @@ Information about the user goes here.
     for filename, content in templates.items():
         file_path = workspace / filename
         if not file_path.exists():
-            file_path.write_text(content)
+            file_path.write_text(content, encoding="utf-8")
             console.print(f"  [dim]Created {filename}[/dim]")
 
     # Create memory directory and MEMORY.md
@@ -1062,7 +1074,7 @@ This file stores important information that should persist across sessions.
 ## Important Notes
 
 (Things to remember)
-""")
+""", encoding="utf-8")
         console.print("  [dim]Created memory/MEMORY.md[/dim]")
 
 
@@ -1647,11 +1659,12 @@ def _get_bridge_dir() -> Path:
     # Install and build
     try:
         npm = get_npm_command()
+        use_shell = platform.system() == "Windows"
         console.print("  Installing dependencies...")
-        subprocess.run([npm, "install"], cwd=user_bridge, check=True, capture_output=True, shell=(platform.system() == "Windows"))
+        subprocess.run(f'"{npm}" install' if use_shell else [npm, "install"], cwd=user_bridge, check=True, capture_output=True, shell=use_shell)
 
         console.print("  Building...")
-        subprocess.run([npm, "run", "build"], cwd=user_bridge, check=True, capture_output=True, shell=(platform.system() == "Windows"))
+        subprocess.run(f'"{npm}" run build' if use_shell else [npm, "run", "build"], cwd=user_bridge, check=True, capture_output=True, shell=use_shell)
 
         console.print("[green]✓[/green] Bridge ready\n")
     except subprocess.CalledProcessError as e:
@@ -1678,7 +1691,8 @@ def channels_login():
 
     try:
         npm = get_npm_command()
-        subprocess.run([npm, "start"], cwd=bridge_dir, check=True, shell=(platform.system() == "Windows"))
+        use_shell = platform.system() == "Windows"
+        subprocess.run(f'"{npm}" start' if use_shell else [npm, "start"], cwd=bridge_dir, check=True, shell=use_shell)
     except subprocess.CalledProcessError as e:
         console.print(f"[red]Bridge failed: {e}[/red]")
     except FileNotFoundError:

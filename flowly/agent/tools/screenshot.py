@@ -349,6 +349,8 @@ class ScreenshotTool(Tool):
         Returns None on success, error message on failure.
         """
         # PowerShell script to capture screen
+        # Use forward slashes to avoid PowerShell escape issues with backslashes
+        safe_path = str(output_path).replace("\\", "/")
         ps_script = f'''
 Add-Type -AssemblyName System.Windows.Forms
 $screen = [System.Windows.Forms.Screen]::AllScreens[{display}]
@@ -356,7 +358,7 @@ $bounds = $screen.Bounds
 $bitmap = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
 $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-$bitmap.Save("{output_path}")
+$bitmap.Save("{safe_path}")
 $graphics.Dispose()
 $bitmap.Dispose()
 '''
