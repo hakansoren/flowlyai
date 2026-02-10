@@ -690,6 +690,73 @@ def setup_x() -> bool:
     return True
 
 
+def setup_exec() -> bool:
+    """
+    Interactive command execution setup wizard.
+
+    Returns True if setup was successful.
+    """
+    from flowly.config.loader import load_config, save_config
+
+    console.print("\n[bold cyan]Command Execution Setup[/bold cyan]")
+    console.print("─" * 40)
+
+    config = load_config()
+    exec_cfg = config.tools.exec
+
+    if exec_cfg.enabled:
+        console.print(f"\n[green]✓[/green] Already enabled")
+        console.print(f"  Security: {exec_cfg.security}")
+        console.print(f"  Ask mode: {exec_cfg.ask}")
+        if not Confirm.ask("Reconfigure?", default=False):
+            return True
+
+    console.print("\n[dim]This allows the agent to run shell commands on your machine.[/dim]")
+    console.print("[dim]Use with caution — choose an appropriate security level.[/dim]")
+
+    # Enable
+    if not Confirm.ask("\nEnable command execution?", default=True):
+        config.tools.exec.enabled = False
+        save_config(config)
+        console.print("[yellow]Command execution disabled[/yellow]")
+        return True
+
+    # Security level
+    console.print("\n[bold]Security level:[/bold]")
+    console.print("  [cyan]1.[/cyan] allowlist - Only approved commands run, new ones are asked [dim](recommended)[/dim]")
+    console.print("  [cyan]2.[/cyan] full      - All commands run without restriction [dim](dangerous)[/dim]")
+
+    sec_choice = Prompt.ask("Choose security level", choices=["1", "2"], default="1")
+    security = "allowlist" if sec_choice == "1" else "full"
+
+    # Ask mode (only for allowlist)
+    ask = "on-miss"
+    if security == "allowlist":
+        console.print("\n[bold]Approval mode:[/bold]")
+        console.print("  [cyan]1.[/cyan] on-miss - Ask via chat when command is not in allowlist [dim](recommended)[/dim]")
+        console.print("  [cyan]2.[/cyan] always  - Ask for every command")
+        console.print("  [cyan]3.[/cyan] off     - Deny unknown commands silently")
+
+        ask_choice = Prompt.ask("Choose approval mode", choices=["1", "2", "3"], default="1")
+        ask_map = {"1": "on-miss", "2": "always", "3": "off"}
+        ask = ask_map[ask_choice]
+
+    config.tools.exec.enabled = True
+    config.tools.exec.security = security
+    config.tools.exec.ask = ask
+    save_config(config)
+
+    console.print(f"\n[green]✓[/green] Command execution enabled")
+    console.print(f"  Security: [cyan]{security}[/cyan]")
+    console.print(f"  Ask mode: [cyan]{ask}[/cyan]")
+
+    if security == "allowlist" and ask == "on-miss":
+        console.print("\n[dim]The agent will ask you via chat before running new commands.[/dim]")
+        console.print("[dim]Approved commands are remembered for next time.[/dim]")
+
+    return True
+
+
 def _get_module_statuses() -> list[tuple[str, str, str]]:
     """Get configuration status for each setup module.
 
@@ -755,12 +822,20 @@ def _get_module_statuses() -> list[tuple[str, str, str]]:
     else:
         statuses.append(("Discord Bot", "[red]✗[/red]", "[dim]not configured[/dim]"))
 
-    # 7. Slack Bot
+    # 8. Slack Bot
     slack_token = config.channels.slack.bot_token
     if slack_token and config.channels.slack.app_token:
         statuses.append(("Slack Bot", "[green]✓[/green]", f"[dim]{config.channels.slack.group_policy}[/dim]"))
     else:
         statuses.append(("Slack Bot", "[red]✗[/red]", "[dim]not configured[/dim]"))
+
+    # 9. Command Execution
+    exec_cfg = config.tools.exec
+    if exec_cfg.enabled:
+        detail = f"{exec_cfg.security}, ask={exec_cfg.ask}"
+        statuses.append(("Command Execution", "[green]✓[/green]", f"[dim]{detail}[/dim]"))
+    else:
+        statuses.append(("Command Execution", "[red]✗[/red]", "[dim]disabled[/dim]"))
 
     return statuses
 
@@ -787,6 +862,7 @@ def setup_all() -> None:
         ("X (Twitter)", setup_x),
         ("Discord Bot", setup_discord),
         ("Slack Bot", setup_slack),
+        ("Command Execution", setup_exec),
     ]
 
     # Build menu entries with status indicators
