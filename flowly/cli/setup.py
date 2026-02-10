@@ -621,6 +621,75 @@ def setup_slack() -> bool:
     return True
 
 
+def setup_x() -> bool:
+    """
+    Interactive X (Twitter) API setup wizard.
+
+    Returns True if setup was successful.
+    """
+    from flowly.config.loader import load_config, save_config
+
+    console.print("\n[bold cyan]X (Twitter) Integration Setup[/bold cyan]")
+    console.print("─" * 40)
+
+    config = load_config()
+    x_cfg = config.integrations.x
+
+    if x_cfg.bearer_token or x_cfg.api_key:
+        console.print(f"\n[green]✓[/green] Already configured")
+        if x_cfg.bearer_token:
+            console.print(f"  Bearer Token: {x_cfg.bearer_token[:10]}...")
+        if x_cfg.api_key:
+            console.print(f"  API Key: {x_cfg.api_key[:10]}...")
+        if not Confirm.ask("Reconfigure?", default=False):
+            return True
+
+    console.print("\n[dim]To get X API credentials:[/dim]")
+    console.print("  1. Go to [cyan]https://developer.x.com/en/portal/dashboard[/cyan]")
+    console.print("  2. Create a Project and App")
+    console.print("  3. In App Settings > [cyan]Keys and Tokens[/cyan]:")
+    console.print("     - Generate [cyan]Bearer Token[/cyan] (for reading)")
+    console.print("     - Generate [cyan]API Key & Secret[/cyan] (for posting)")
+    console.print("     - Generate [cyan]Access Token & Secret[/cyan] (for posting)")
+    console.print("  4. Set App permissions to [cyan]Read and Write[/cyan]")
+    console.print()
+
+    # Bearer Token (read operations)
+    bearer_token = Prompt.ask("Enter Bearer Token (for search/timeline)").strip()
+    if not bearer_token:
+        console.print("[yellow]Skipped - X integration disabled[/yellow]")
+        return True
+
+    config.integrations.x.bearer_token = bearer_token
+    save_config(config)
+    console.print("[green]✓[/green] Bearer Token saved")
+
+    # OAuth 1.0a (write operations)
+    if Confirm.ask("\nSet up posting (OAuth 1.0a)?", default=True):
+        api_key = Prompt.ask("  Enter API Key (Consumer Key)").strip()
+        api_secret = Prompt.ask("  Enter API Secret (Consumer Secret)").strip()
+        access_token = Prompt.ask("  Enter Access Token").strip()
+        access_token_secret = Prompt.ask("  Enter Access Token Secret").strip()
+
+        if api_key and api_secret and access_token and access_token_secret:
+            config.integrations.x.api_key = api_key
+            config.integrations.x.api_secret = api_secret
+            config.integrations.x.access_token = access_token
+            config.integrations.x.access_token_secret = access_token_secret
+            save_config(config)
+            console.print("[green]✓[/green] OAuth 1.0a credentials saved (posting enabled)")
+        else:
+            console.print("[yellow]Incomplete credentials - posting disabled, read-only mode[/yellow]")
+
+    console.print("\n[green]✓ X setup complete![/green]")
+    console.print("\n[dim]You can now use X commands with the agent:[/dim]")
+    console.print("  • Search X for 'python'")
+    console.print("  • Show @elonmusk's recent tweets")
+    console.print("  • Post a tweet: Hello world!")
+
+    return True
+
+
 def _get_module_statuses() -> list[tuple[str, str, str]]:
     """Get configuration status for each setup module.
 
@@ -670,7 +739,15 @@ def _get_module_statuses() -> list[tuple[str, str, str]]:
     else:
         statuses.append(("Trello", "[red]✗[/red]", "[dim]not configured[/dim]"))
 
-    # 6. Discord Bot
+    # 6. X (Twitter)
+    x_cfg = config.integrations.x
+    if x_cfg.bearer_token or x_cfg.api_key:
+        has_post = "read+write" if x_cfg.api_key else "read-only"
+        statuses.append(("X (Twitter)", "[green]✓[/green]", f"[dim]{has_post}[/dim]"))
+    else:
+        statuses.append(("X (Twitter)", "[red]✗[/red]", "[dim]not configured[/dim]"))
+
+    # 7. Discord Bot
     discord_token = config.channels.discord.token
     if discord_token:
         masked = discord_token[:8] + "..."
@@ -707,6 +784,7 @@ def setup_all() -> None:
         ("Voice Transcription", setup_voice),
         ("Voice Calls", setup_voice_calls),
         ("Trello", setup_trello),
+        ("X (Twitter)", setup_x),
         ("Discord Bot", setup_discord),
         ("Slack Bot", setup_slack),
     ]
