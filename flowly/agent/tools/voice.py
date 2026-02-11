@@ -142,10 +142,7 @@ Examples:
             return greeting.strip()
         if script and script.strip():
             return script.strip()
-        return (
-            "Hello, Flowly calling. I have a quick update. "
-            "Let me know if now is a good time."
-        )
+        return "Hello!"
 
     def _resolve_default_to_number(self) -> str | None:
         """Resolve default target phone number from voice plugin config, if available."""
