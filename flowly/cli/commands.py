@@ -1217,6 +1217,25 @@ def gateway(
     # Set cron job callback (needs agent to be created first)
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
+
+        def _inject_cron_result_to_session(
+            job: CronJob, result: str, *, is_error: bool = False
+        ) -> None:
+            """Inject cron job result into the user's original session so the
+            agent is aware of what happened when the user continues chatting."""
+            channel = job.payload.channel or "telegram"
+            chat_id = job.payload.to
+            if not chat_id:
+                return
+            session_key = f"{channel}:{chat_id}"
+            session = agent.sessions.get_or_create(session_key)
+            status = "ERROR" if is_error else "COMPLETED"
+            session.add_message(
+                "system",
+                f"[Cron Job {status}: {job.name}]\n{result}",
+            )
+            agent.sessions.save(session)
+
         if job.payload.kind == "tool_call":
             tool_name = job.payload.tool_name
             if not tool_name:
@@ -1233,6 +1252,10 @@ def gateway(
                         context_tool.set_context(delivery_channel, delivery_to)
 
             result = await agent.tools.execute(tool_name, job.payload.tool_args or {})
+            is_error = bool(result and result.startswith("Error"))
+
+            # Inject result into user's session so agent knows what happened
+            _inject_cron_result_to_session(job, result or "✓ Done.", is_error=is_error)
 
             if job.payload.deliver and delivery_to:
                 from flowly.bus.events import OutboundMessage
@@ -1252,6 +1275,14 @@ def gateway(
             if job.payload.to:
                 # We have a specific target - send directly after agent processes
                 response = await agent.process_direct(prompt, session_key=f"cron:{job.id}")
+
+                # Inject result into user's session
+                _inject_cron_result_to_session(
+                    job,
+                    response or "(no response)",
+                    is_error=not response,
+                )
+
                 from flowly.bus.events import OutboundMessage
                 await bus.publish_outbound(OutboundMessage(
                     channel=channel,
@@ -1268,6 +1299,14 @@ def gateway(
                 )
 
         response = await agent.process_direct(prompt, session_key=f"cron:{job.id}")
+
+        # Inject result into user's session even for non-deliver jobs
+        _inject_cron_result_to_session(
+            job,
+            response or "(no response)",
+            is_error=not response,
+        )
+
         return response
 
     cron.on_job = on_cron_job
