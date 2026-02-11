@@ -247,8 +247,8 @@ class AgentLoop:
         (e.g. "kapat"). We only want to analyze what the user actually said.
         """
         voice_patterns = (
-            r'Kullanıcı şunu söyledi:\s*"(.*?)"',
             r'User said:\s*"(.*?)"',
+            r'Kullanıcı şunu söyledi:\s*"(.*?)"',
         )
         for pattern in voice_patterns:
             match = re.search(pattern, content, flags=re.DOTALL | re.IGNORECASE)
@@ -385,9 +385,9 @@ class AgentLoop:
             if isinstance(msg, dict)
         )
         retry_context_markers = (
-            "tool çağrısı doğrulanamadı",
-            "tool çağrıları başarısız oldu",
-            "işlem yapılmadı",
+            "tool call could not be verified",
+            "tool calls failed",
+            "no action was taken",
         )
         if any(marker in recent_text for marker in retry_context_markers):
             return True
@@ -465,10 +465,11 @@ class AgentLoop:
         """
         lowered = content.lower()
         return (
-            "[aktif telefon görüşmesi]" in lowered
+            "[active phone call]" in lowered
+            or "[aktif telefon görüşmesi]" in lowered
             or "[aktif telefon gorusmesi]" in lowered
-            or ("call sid:" in lowered and "kullanıcı şunu söyledi:" in lowered)
             or ("call sid:" in lowered and "user said:" in lowered)
+            or ("call sid:" in lowered and "kullanıcı şunu söyledi:" in lowered)
         )
 
     def _apply_turn_tool_policy(
@@ -623,14 +624,14 @@ class AgentLoop:
                 if schema_rejected:
                     logger.error("Provider rejected tool schema; aborting turn without additional retries.")
                     final_content = (
-                        "Tool şeması model sağlayıcısı tarafından reddedildi. "
-                        "İşlem çalıştırılmadı."
+                        "Tool schema was rejected by the model provider. "
+                        "No action was taken."
                     )
                 else:
                     logger.error("LLM call failed after fallback; aborting turn without additional retries.")
                     final_content = (
-                        "Model sağlayıcısından geçerli yanıt alınamadı. "
-                        "İşlem çalıştırılmadı."
+                        "Could not get a valid response from the model provider. "
+                        "No action was taken."
                     )
                 break
 
@@ -657,9 +658,9 @@ class AgentLoop:
                 if response.content:
                     content_lower = response.content.lower()
                     hallucination_phrases = [
-                        "yaptım", "gönderdim", "aldım", "açtım", "kapattım",
                         "i did", "i sent", "i took", "i opened", "i closed",
-                        "done", "completed", "finished", "tamamlandı",
+                        "done", "completed", "finished",
+                        "yaptım", "gönderdim", "aldım", "açtım", "kapattım", "tamamlandı",
                     ]
                     if not any(phrase in content_lower for phrase in hallucination_phrases):
                         assistant_content = response.content
@@ -683,8 +684,8 @@ class AgentLoop:
                     ):
                         blocked_tools.append(tool_call.name)
                         result = (
-                            f"Error: Tool '{tool_call.name}' live-call güvenlik politikası "
-                            "tarafından engellendi."
+                            f"Error: Tool '{tool_call.name}' was blocked by the "
+                            "live-call security policy."
                         )
                         logger.error(
                             f"Live call blocked risky tool: {tool_call.name} args={args_str[:160]}"
@@ -758,11 +759,11 @@ class AgentLoop:
                     if successful:
                         last_ok = successful[-1]
                         final_content = (
-                            "İşlem tamamlandı.\n"
+                            "Action completed.\n"
                             f"{last_ok['tool']}: {last_ok['result']}"
                         )
                     else:
-                        final_content = "İşlem çalıştırıldı."
+                        final_content = "Action executed."
                     break
 
                 if live_call_turn and not enforce_action_tools:
@@ -772,10 +773,10 @@ class AgentLoop:
                         final_content = (
                             response.content.strip()
                             if response.content and response.content.strip()
-                            else f"İşlem tamamlandı: {last_ok['tool']}"
+                            else f"Action completed: {last_ok['tool']}"
                         )
                     else:
-                        final_content = "Canlı arama için güvenli bir tool çalıştırılamadı."
+                        final_content = "No safe tool could be executed for the live call."
                     break
 
                 if enforce_action_tools and turn_success_count == 0:
@@ -788,13 +789,13 @@ class AgentLoop:
                         messages.append({
                             "role": "user",
                             "content": (
-                                "Önceki tool çağrısı başarısız oldu. "
-                                "Doğru parametrelerle ilgili tool'u tekrar çağır. "
-                                "Başarısızsa net hata ver, başka alakasız tool çağırma."
+                                "The previous tool call failed. "
+                                "Retry the relevant tool with correct parameters. "
+                                "If it fails, give a clear error — do not call unrelated tools."
                             ),
                         })
                         continue
-                    final_content = "Tool çağrıları başarısız oldu, işlem yapılmadı."
+                    final_content = "Tool calls failed, no action was taken."
                     break
 
                 continue
@@ -816,9 +817,9 @@ class AgentLoop:
                 messages.append({
                     "role": "user",
                     "content": (
-                        "Önceki yanıt işlemin yapıldığını söylüyor ama tool çağrısı yok. "
-                        "Şimdi uygun tool'u zorunlu olarak çağır. "
-                        "Tool çalışmadan işlem tamamlandı deme."
+                        "The previous response claims the action was done but no tool was called. "
+                        "You must call the appropriate tool now. "
+                        "Do not claim completion without executing a tool."
                     ),
                 })
                 continue
@@ -833,17 +834,17 @@ class AgentLoop:
                     messages.append({
                         "role": "user",
                         "content": (
-                            "Bu istek bir aksiyon isteği. Uygun tool'u şimdi çağır. "
-                            "Tool çalıştırmadan işlem tamamlandı deme."
+                            "This is an action request. Call the appropriate tool now. "
+                            "Do not claim completion without executing a tool."
                         ),
                     })
                     continue
 
-                final_content = "Tool çağrısı doğrulanamadı, işlem yapılmadı."
+                final_content = "Tool call could not be verified, no action was taken."
                 break
 
             if forced_tool_retry and not successful_tools_were_used:
-                final_content = "Tool çağrısı doğrulanamadı, işlem yapılmadı."
+                final_content = "Tool call could not be verified, no action was taken."
                 break
 
             final_content = response.content
@@ -851,25 +852,25 @@ class AgentLoop:
 
         if enforce_action_tools and not successful_tools_were_used:
             if not final_content or not final_content.startswith("Tool"):
-                final_content = "Tool çağrıları başarısız oldu, işlem yapılmadı."
+                final_content = "Tool calls failed, no action was taken."
 
         if final_content is None:
             if accumulated_tool_results:
-                summary = f"İşlemler tamamlandı ({len(accumulated_tool_results)} tool çalıştırıldı):\n"
+                summary = f"Actions completed ({len(accumulated_tool_results)} tools executed):\n"
                 for tr in accumulated_tool_results[-5:]:
                     status = "✓" if tr["success"] else "✗"
                     summary += f"  {status} {tr['tool']}\n"
                 final_content = summary
             else:
-                final_content = "İşlem tamamlandı ancak yanıt üretilemedi."
+                final_content = "Action completed but no response could be generated."
 
         if not final_content or not final_content.strip():
             if enforce_action_tools and not successful_tools_were_used:
-                final_content = "Tool çağrısı doğrulanamadı, işlem yapılmadı."
+                final_content = "Tool call could not be verified, no action was taken."
             elif accumulated_tool_results:
-                final_content = "✓ İşlem tamamlandı."
+                final_content = "✓ Action completed."
             else:
-                final_content = "İşlem tamamlandı ancak yanıt üretilemedi."
+                final_content = "Action completed but no response could be generated."
 
         if (
             final_content
@@ -878,7 +879,7 @@ class AgentLoop:
             and self._contains_unverified_completion_claim(final_content)
         ):
             logger.warning("Suppressed unverified completion claim because no tool was executed.")
-            final_content = "Tool çalıştırılmadı, işlem yapılmadı."
+            final_content = "No tool was executed, no action was taken."
 
         logger.info(
             "LLM final telemetry: "

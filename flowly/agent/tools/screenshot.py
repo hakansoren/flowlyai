@@ -276,20 +276,20 @@ class ScreenshotTool(Tool):
                 error_lower = error.lower()
                 if "could not create image from display" in error_lower:
                     return (
-                        "Error: macOS ekran görüntüsü alınamadı (display capture unavailable).\n"
-                        "Muhtemel nedenler:\n"
-                        "1) Flowly process'ine Screen Recording izni verilmemiş\n"
-                        "2) Process aktif GUI (Aqua) oturumunda çalışmıyor\n\n"
-                        "Kontrol:\n"
+                        "Error: macOS screenshot failed (display capture unavailable).\n"
+                        "Possible causes:\n"
+                        "1) Screen Recording permission not granted to Flowly\n"
+                        "2) Process is not running in an active GUI (Aqua) session\n\n"
+                        "Fix:\n"
                         "- System Settings -> Privacy & Security -> Screen Recording\n"
-                        "- Flowly Desktop uygulamasını aç (otomatik izin delegasyonu)\n"
-                        "- Veya Flowly binary'sine manuel izin ver"
+                        "- Open Flowly Desktop app (automatic permission delegation)\n"
+                        "- Or manually grant permission to the Flowly binary"
                     )
                 if "operation not permitted" in error_lower or "not authorized" in error_lower:
                     return (
-                        "Error: Screen Recording izni yok.\n"
-                        "Flowly Desktop uygulamasını açarak veya\n"
-                        "System Settings -> Privacy & Security -> Screen Recording'den izin ver."
+                        "Error: Screen Recording permission denied.\n"
+                        "Open Flowly Desktop app or grant permission via\n"
+                        "System Settings -> Privacy & Security -> Screen Recording."
                     )
                 return f"Error: screencapture failed - {error}"
 

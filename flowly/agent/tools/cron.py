@@ -360,8 +360,8 @@ class CronTool(Tool):
                 has_script = bool(str(tool_args.get("script", "")).strip())
                 if not has_greeting and not has_script:
                     tool_args["script"] = (
-                        "Merhaba, Flowly arıyor. Kısa bir bilgilendirme yapacağım. "
-                        "Müsaitsen şimdi paylaşabilirim."
+                        "Hello, Flowly calling. I have a quick update. "
+                        "Let me know if now is a good time."
                     )
         elif not message:
             return "Error: 'message' is required for adding a job"

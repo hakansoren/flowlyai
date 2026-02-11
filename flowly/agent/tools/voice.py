@@ -65,8 +65,8 @@ When you make a call:
 4. Your response is automatically spoken back
 
 Examples:
-- Make a call: voice_call(action="call", to="+1234567890", greeting="Merhaba, nasıl yardımcı olabilirim?")
-- End call: voice_call(action="end_call", call_sid="CA...", message="Görüşürüz!")
+- Make a call: voice_call(action="call", to="+1234567890", greeting="Hello, how can I help you?")
+- End call: voice_call(action="end_call", call_sid="CA...", message="Goodbye!")
 - List calls: voice_call(action="list_calls")"""
 
     @property
@@ -143,8 +143,8 @@ Examples:
         if script and script.strip():
             return script.strip()
         return (
-            "Merhaba, Flowly arıyor. Kısa bir bilgilendirme yapacağım. "
-            "Müsaitsen şimdi paylaşabilirim."
+            "Hello, Flowly calling. I have a quick update. "
+            "Let me know if now is a good time."
         )
 
     def _resolve_default_to_number(self) -> str | None:

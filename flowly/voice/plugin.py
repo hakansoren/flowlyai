@@ -150,7 +150,7 @@ class VoicePlugin:
         """
         call = self.call_manager.get_call(call_sid)
         if not call:
-            return "Bir hata oluştu."
+            return "An error occurred."
 
         # Set message tool context for Telegram if we have chat_id
         telegram_chat_id = call.telegram_chat_id
@@ -165,37 +165,36 @@ class VoicePlugin:
         telegram_instruction = ""
         if telegram_chat_id:
             telegram_instruction = f"""
-4. Telegram'a göndermek için: message(content="mesaj", media_paths=["/path/to/file"]) - chat_id otomatik ayarlı ({telegram_chat_id})
-5. Screenshot alıp Telegram'a göndermek için: ÖNCE screenshot() çağır, SONRA dönen path'i message() ile gönder."""
+4. To send to Telegram: message(content="msg", media_paths=["/path/to/file"]) - chat_id is auto-set ({telegram_chat_id})
+5. To screenshot and send to Telegram: FIRST call screenshot(), THEN send the returned path via message()."""
         else:
             telegram_instruction = """
-4. Telegram erişimi yok - kullanıcıya sadece sesli yanıt verebilirsin."""
+4. No Telegram access — you can only respond with voice."""
 
-        prompt = f"""[AKTİF TELEFON GÖRÜŞMESI]
+        prompt = f"""[ACTIVE PHONE CALL]
 Call SID: {call_sid}
-Arayan: {call.from_number}
+Caller: {call.from_number}
 
-Kullanıcı şunu söyledi: "{text}"
+User said: "{text}"
 
-ÖNEMLİ KURALLAR:
-1. TÜRKÇE KONUŞ - Kullanıcı Türkçe konuşuyor, sen de Türkçe yanıt ver.
-2. Bu bir telefon görüşmesi - kullanıcı sadece senin söylediklerini duyuyor.
-3. Gerekirse yalnızca güvenli tool setini kullan (voice_call end/list, screenshot, message, system).{telegram_instruction}
-6. Normal yanıtlarında voice_call(action="speak") çağırma; düz metin ver, sistem zaten seslendirecek.
-7. Aramayı kapatmak için: voice_call(action="end_call", call_sid="{call_sid}", message="Görüşürüz!")
-8. Kısa ve net konuş - telefonda uzun cümleler zor anlaşılır.
+IMPORTANT RULES:
+1. This is a phone call — the user can only hear what you say.
+2. Only use safe tools if needed (voice_call end/list, screenshot, message, system).{telegram_instruction}
+6. Do NOT call voice_call(action="speak") in normal responses; just return plain text — the system will speak it.
+7. To hang up: voice_call(action="end_call", call_sid="{call_sid}", message="Goodbye!")
+8. Keep it short and clear — long sentences are hard to understand on the phone.
 
-Şimdi kullanıcıya Türkçe yanıt ver:"""
+Respond to the user now:"""
 
         # Use session key to maintain context
         session_key = call.session_key or f"voice:{call_sid}"
 
         try:
             response = await self.agent.process_direct(prompt, session_key=session_key)
-            return response or "Bir sorun oluştu, tekrar söyler misin?"
+            return response or "Sorry, something went wrong. Could you say that again?"
         except Exception as e:
             logger.error(f"Agent error during voice call: {e}")
-            return "Bir hata oluştu, lütfen tekrar dene."
+            return "An error occurred, please try again."
 
     def _start_ngrok_tunnel_sync(self, port: int, authtoken: str) -> str:
         """Start ngrok tunnel (blocking). Must be called via asyncio.to_thread()."""

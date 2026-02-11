@@ -1262,7 +1262,7 @@ def gateway(
                 await bus.publish_outbound(OutboundMessage(
                     channel=delivery_channel,
                     chat_id=delivery_to,
-                    content=result or "✓ İşlem tamamlandı.",
+                    content=result or "✓ Done.",
                 ))
 
             return result
@@ -1347,23 +1347,22 @@ def gateway(
             session_key = f"voice:{call_sid}"
 
         # Format message with clear voice context
-        prompt = f"""[AKTİF TELEFON GÖRÜŞMESI]
+        prompt = f"""[ACTIVE PHONE CALL]
 Call SID: {call_sid}
-Arayan: {from_number}
+Caller: {from_number}
 
-Kullanıcı şunu söyledi: "{text}"
+User said: "{text}"
 
-ÖNEMLİ KURALLAR:
-1. TÜRKÇE KONUŞ - Kullanıcı Türkçe konuşuyor, sen de Türkçe yanıt ver.
-2. Bu bir telefon görüşmesi - kullanıcı sadece senin söylediklerini duyuyor.
-3. Gerekirse yalnızca güvenli tool setini kullan (voice_call end/list, screenshot, message, system).
-4. Screenshot alırsan otomatik Telegram'a gider, kullanıcıya "ekran görüntüsünü Telegram'a gönderdim" de.
-5. Aramayı kapatmak için: voice_call(action="end_call", call_sid="{call_sid}", message="Görüşürüz!")
-6. Kısa ve net konuş - telefonda uzun cümleler zor anlaşılır.
+IMPORTANT RULES:
+1. This is a phone call — the user can only hear what you say.
+2. Only use safe tools if needed (voice_call end/list, screenshot, message, system).
+3. If you take a screenshot, it goes to Telegram automatically — tell the user "I sent the screenshot to Telegram".
+4. To hang up: voice_call(action="end_call", call_sid="{call_sid}", message="Goodbye!")
+5. Keep it short and clear — long sentences are hard to understand on the phone.
 
-Şimdi kullanıcıya Türkçe yanıt ver:"""
+Respond to the user now:"""
         response = await agent.process_direct(prompt, session_key=session_key)
-        return response or "Üzgünüm, bir sorun oluştu. Tekrar söyler misin?"
+        return response or "Sorry, something went wrong. Could you say that again?"
 
     gateway_server = GatewayServer(
         host=config.gateway.host,
