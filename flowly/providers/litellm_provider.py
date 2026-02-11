@@ -33,10 +33,10 @@ class LiteLLMProvider(LLMProvider):
             (api_key and api_key.startswith("sk-or-")) or
             (api_base and "openrouter" in api_base)
         )
-        
+
         # Track if using custom endpoint (vLLM, etc.)
         self.is_vllm = bool(api_base) and not self.is_openrouter
-        
+
         # Configure LiteLLM based on provider
         if api_key:
             if self.is_openrouter:
@@ -123,9 +123,11 @@ class LiteLLMProvider(LLMProvider):
                 "HTTP-Referer": "https://github.com/pve/flowlyai",
             }
         
-        # Pass api_base directly for custom endpoints (vLLM, etc.)
+        # Pass api_base and api_key directly for custom endpoints
         if self.api_base:
             kwargs["api_base"] = self.api_base
+        if self.api_key:
+            kwargs["api_key"] = self.api_key
         
         if tools:
             kwargs["tools"] = tools
