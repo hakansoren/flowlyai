@@ -424,6 +424,57 @@ class AgentLoop:
         )
         return any(re.search(pattern, lowered) for pattern in claim_patterns)
 
+    # Hardcoded fallback messages that should be replaced by model-generated summaries.
+    _HARDCODED_FALLBACKS = frozenset({
+        "Tool calls failed, no action was taken.",
+        "Tool call could not be verified, no action was taken.",
+        "No safe tool could be executed for the live call.",
+        "Action executed.",
+        "Action completed but no response could be generated.",
+        "No tool was executed, no action was taken.",
+    })
+
+    def _is_hardcoded_fallback(self, content: str) -> bool:
+        """Check if final_content is a hardcoded fallback rather than model output."""
+        if content in self._HARDCODED_FALLBACKS:
+            return True
+        if content.startswith("Actions completed (") and "tools executed" in content:
+            return True
+        if content.startswith("✓ Action completed"):
+            return True
+        if content.startswith("Action completed.\n"):
+            return True
+        return False
+
+    async def _request_summary_turn(
+        self, messages: list[dict], tool_results: list[dict]
+    ) -> str | None:
+        """Ask the model to summarize tool results in natural language.
+
+        When tool calls complete but the loop exits with a hardcoded fallback,
+        this gives the model a chance to explain what happened to the user.
+        """
+        summary_prompt = (
+            "The tool calls above have completed. "
+            "Summarize what happened to the user in a natural, concise way. "
+            "If there were errors, explain what went wrong clearly."
+        )
+        messages_copy = list(messages)
+        messages_copy.append({"role": "user", "content": summary_prompt})
+
+        try:
+            response = await self.provider.chat(
+                messages=messages_copy,
+                tools=[],
+                model=self.model,
+                temperature=self.temperature,
+            )
+            if response.content and response.content.strip():
+                return response.content.strip()
+        except Exception as e:
+            logger.warning(f"Summary turn failed, keeping fallback: {e}")
+        return None
+
     def _is_strict_live_call_action_intent(self, content: str) -> bool:
         """
         Detect high-confidence action intents in an active call turn.
@@ -890,6 +941,14 @@ class AgentLoop:
 
         if enforce_action_tools and not executed_tool_names:
             logger.error("Action turn alarm: executed_tools=0")
+
+        # If the loop produced a hardcoded fallback and tool results exist,
+        # ask the model to summarize what happened in natural language.
+        if final_content and self._is_hardcoded_fallback(final_content) and accumulated_tool_results:
+            logger.info("Requesting model summary turn to replace hardcoded fallback")
+            summary = await self._request_summary_turn(messages, accumulated_tool_results)
+            if summary:
+                final_content = summary
 
         return final_content, accumulated_tool_results, executed_tool_names
 
