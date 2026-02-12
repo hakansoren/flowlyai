@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import os
+import secrets
 import time
 import uuid
 from pathlib import Path
@@ -10,6 +12,9 @@ from typing import Any, Callable, Coroutine, Literal
 from loguru import logger
 
 from flowly.cron.types import CronJob, CronJobState, CronPayload, CronSchedule, CronStore
+
+
+_JOB_TIMEOUT_S = 120
 
 
 def _now_ms() -> int:
@@ -103,12 +108,12 @@ class CronService:
         return self._store
     
     def _save_store(self) -> None:
-        """Save jobs to disk."""
+        """Save jobs to disk atomically."""
         if not self._store:
             return
-        
+
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         data = {
             "version": self._store.version,
             "jobs": [
@@ -145,8 +150,17 @@ class CronService:
                 for j in self._store.jobs
             ]
         }
-        
-        self.store_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+        tmp_path = self.store_path.with_suffix(f".tmp.{secrets.token_hex(4)}")
+        try:
+            tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            os.replace(str(tmp_path), str(self.store_path))
+        except Exception:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
     
     async def start(self) -> None:
         """Start the cron service."""
@@ -225,19 +239,25 @@ class CronService:
         try:
             response = None
             if self.on_job:
-                response = await self.on_job(job)
+                response = await asyncio.wait_for(
+                    self.on_job(job), timeout=_JOB_TIMEOUT_S
+                )
 
             # Treat explicit tool/job error responses as failed executions.
             if isinstance(response, str) and response.strip().lower().startswith("error"):
                 raise RuntimeError(response)
-            
+
             job.state.last_status = "ok"
             job.state.last_error = None
             logger.info(f"Cron: job '{job.name}' completed")
-            
+
+        except asyncio.TimeoutError:
+            job.state.last_status = "error"
+            job.state.last_error = f"Timed out after {_JOB_TIMEOUT_S}s"
+            logger.error(f"Cron: job '{job.name}' timed out after {_JOB_TIMEOUT_S}s")
         except Exception as e:
             job.state.last_status = "error"
-            job.state.last_error = str(e)
+            job.state.last_error = str(e)[:500]
             logger.error(f"Cron: job '{job.name}' failed: {e}")
         
         job.state.last_run_at_ms = start_ms

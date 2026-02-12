@@ -337,7 +337,11 @@ def create_voice_app(
 
         try:
             async for message in websocket.iter_text():
-                data = json.loads(message)
+                try:
+                    data = json.loads(message)
+                except (json.JSONDecodeError, ValueError):
+                    logger.warning("Malformed WebSocket message, skipping")
+                    continue
                 event = data.get("event")
 
                 if event != "media":
@@ -430,7 +434,7 @@ class TwilioClient:
             )
 
             if response.status_code not in (200, 201):
-                raise Exception(f"Twilio API error: {response.status_code} - {response.text}")
+                raise Exception(f"Twilio API error: HTTP {response.status_code}")
 
             result = response.json()
             call_sid = result["sid"]
@@ -460,7 +464,7 @@ class TwilioClient:
             )
 
             if response.status_code != 200:
-                logger.error("Failed to end call: %s - %s", response.status_code, response.text)
+                logger.error("Failed to end call: HTTP %s", response.status_code)
                 return False
 
             logger.info("Call ended via API: %s", call_sid)

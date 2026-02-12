@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from typing import Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -119,8 +119,15 @@ class ProvidersConfig(BaseModel):
 
 class GatewayConfig(BaseModel):
     """Gateway/server configuration."""
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 18790
+
+    @field_validator("port")
+    @classmethod
+    def _validate_port(cls, v: int) -> int:
+        if not 1 <= v <= 65535:
+            raise ValueError(f"port must be between 1 and 65535, got {v}")
+        return v
 
 
 class WebSearchConfig(BaseModel):
@@ -142,6 +149,13 @@ class ExecToolConfig(BaseModel):
     timeout_seconds: int = 300  # 5 minutes default
     max_output_chars: int = 200000  # 200KB
     approval_timeout_seconds: int = 120  # 2 minutes to approve
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def _validate_timeout(cls, v: int) -> int:
+        if not 1 <= v <= 3600:
+            raise ValueError(f"timeout_seconds must be between 1 and 3600, got {v}")
+        return v
 
 
 class TrelloConfig(BaseModel):

@@ -1,11 +1,20 @@
 """Speech-to-Text providers for voice calls."""
 
+import asyncio
 import base64
+import logging
 import httpx
 from abc import ABC, abstractmethod
 from typing import Protocol, Callable, Awaitable
 
 from .types import STTResult
+
+logger = logging.getLogger(__name__)
+
+# Retry configuration for transient HTTP errors
+_MAX_RETRIES = 2
+_RETRY_BASE_DELAY_S = 0.5
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503}
 
 
 class STTProvider(ABC):
@@ -46,37 +55,50 @@ class GroqWhisperSTT(STTProvider):
         if len(audio_data) < 1600:  # Less than 0.1s of audio
             return None
 
-        # Create WAV file in memory
         wav_data = self._create_wav(audio_data)
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{self.base_url}/audio/transcriptions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                files={"file": ("audio.wav", wav_data, "audio/wav")},
-                data={
-                    "model": self.model,
-                    "language": self.language,
-                    "response_format": "json",
-                },
-                timeout=30.0,
-            )
+        last_status = 0
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{self.base_url}/audio/transcriptions",
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                        files={"file": ("audio.wav", wav_data, "audio/wav")},
+                        data={
+                            "model": self.model,
+                            "language": self.language,
+                            "response_format": "json",
+                        },
+                        timeout=30.0,
+                    )
+                    last_status = response.status_code
 
-            if response.status_code != 200:
-                return None
+                    if response.status_code == 200:
+                        result = response.json()
+                        text = result.get("text", "").strip()
+                        if not text:
+                            return None
+                        return STTResult(
+                            text=text,
+                            confidence=1.0,
+                            is_final=True,
+                            language=self.language,
+                        )
 
-            result = response.json()
-            text = result.get("text", "").strip()
+                    if response.status_code not in _RETRYABLE_STATUS_CODES:
+                        return None
 
-            if not text:
-                return None
+            except (httpx.ConnectError, httpx.ReadTimeout):
+                pass
 
-            return STTResult(
-                text=text,
-                confidence=1.0,
-                is_final=True,
-                language=self.language,
-            )
+            if attempt < _MAX_RETRIES:
+                delay = _RETRY_BASE_DELAY_S * (2 ** attempt)
+                logger.warning("Groq STT attempt %d failed (HTTP %s), retrying in %.1fs", attempt + 1, last_status, delay)
+                await asyncio.sleep(delay)
+
+        logger.error("Groq STT failed after %d attempts (last HTTP %s)", _MAX_RETRIES + 1, last_status)
+        return None
 
     def _create_wav(self, pcm_data: bytes) -> bytes:
         """Create a WAV file from PCM data.
@@ -140,36 +162,49 @@ class ElevenLabsSTT(STTProvider):
         if len(audio_data) < 1600:
             return None
 
-        # Create WAV file
         wav_data = self._create_wav(audio_data)
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{self.base_url}/speech-to-text",
-                headers={"xi-api-key": self.api_key},
-                files={"audio": ("audio.wav", wav_data, "audio/wav")},
-                data={
-                    "model_id": self.model,
-                    "language_code": self.language,
-                },
-                timeout=30.0,
-            )
+        last_status = 0
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{self.base_url}/speech-to-text",
+                        headers={"xi-api-key": self.api_key},
+                        files={"audio": ("audio.wav", wav_data, "audio/wav")},
+                        data={
+                            "model_id": self.model,
+                            "language_code": self.language,
+                        },
+                        timeout=30.0,
+                    )
+                    last_status = response.status_code
 
-            if response.status_code != 200:
-                return None
+                    if response.status_code == 200:
+                        result = response.json()
+                        text = result.get("text", "").strip()
+                        if not text:
+                            return None
+                        return STTResult(
+                            text=text,
+                            confidence=1.0,
+                            is_final=True,
+                            language=self.language,
+                        )
 
-            result = response.json()
-            text = result.get("text", "").strip()
+                    if response.status_code not in _RETRYABLE_STATUS_CODES:
+                        return None
 
-            if not text:
-                return None
+            except (httpx.ConnectError, httpx.ReadTimeout):
+                pass
 
-            return STTResult(
-                text=text,
-                confidence=1.0,
-                is_final=True,
-                language=self.language,
-            )
+            if attempt < _MAX_RETRIES:
+                delay = _RETRY_BASE_DELAY_S * (2 ** attempt)
+                logger.warning("ElevenLabs STT attempt %d failed (HTTP %s), retrying in %.1fs", attempt + 1, last_status, delay)
+                await asyncio.sleep(delay)
+
+        logger.error("ElevenLabs STT failed after %d attempts (last HTTP %s)", _MAX_RETRIES + 1, last_status)
+        return None
 
     def _create_wav(self, pcm_data: bytes) -> bytes:
         """Create WAV from PCM (same as GroqWhisperSTT)."""

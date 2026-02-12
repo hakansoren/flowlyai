@@ -121,7 +121,10 @@ Requires Docker to be installed and the user to have Docker permissions."""
                 proc.communicate(),
                 timeout=self.timeout
             )
-            return proc.returncode or 0, stdout.decode(), stderr.decode()
+            max_bytes = 256 * 1024
+            out = stdout[:max_bytes].decode(errors="replace")
+            err = stderr[:max_bytes].decode(errors="replace")
+            return proc.returncode or 0, out, err
         except asyncio.TimeoutError:
             return -1, "", f"Command timed out after {self.timeout}s"
         except FileNotFoundError:

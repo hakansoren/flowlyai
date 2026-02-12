@@ -73,6 +73,7 @@ Works on Linux, macOS, and Windows without external dependencies."""
     async def _run_command(self, cmd: str) -> tuple[int, str]:
         """Run a shell command and return exit code and output."""
         try:
+            max_bytes = 128 * 1024
             proc = await asyncio.create_subprocess_shell(
                 cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -82,7 +83,9 @@ Works on Linux, macOS, and Windows without external dependencies."""
                 proc.communicate(),
                 timeout=self.timeout
             )
-            output = stdout.decode() or stderr.decode()
+            out = stdout[:max_bytes].decode(errors="replace")
+            err = stderr[:max_bytes].decode(errors="replace")
+            output = out or err
             return proc.returncode or 0, output
         except asyncio.TimeoutError:
             return -1, f"Command timed out after {self.timeout}s"
@@ -92,6 +95,7 @@ Works on Linux, macOS, and Windows without external dependencies."""
     async def _run_powershell(self, cmd: str) -> tuple[int, str]:
         """Run a PowerShell command and return exit code and output."""
         try:
+            max_bytes = 128 * 1024
             proc = await asyncio.create_subprocess_exec(
                 "powershell", "-NoProfile", "-Command", cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -100,7 +104,9 @@ Works on Linux, macOS, and Windows without external dependencies."""
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=self.timeout
             )
-            output = stdout.decode() or stderr.decode()
+            out = stdout[:max_bytes].decode(errors="replace")
+            err = stderr[:max_bytes].decode(errors="replace")
+            output = out or err
             return proc.returncode or 0, output
         except asyncio.TimeoutError:
             return -1, f"Command timed out after {self.timeout}s"
