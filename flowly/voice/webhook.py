@@ -9,9 +9,9 @@ import base64
 import hashlib
 import hmac
 import json
-import logging
 from urllib.parse import parse_qsl, urlparse
 
+from loguru import logger
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response
@@ -20,8 +20,6 @@ from starlette.websockets import WebSocket
 
 from flowly.config.schema import VoiceWebhookSecurityConfig
 from .call_manager import CallManager
-
-logger = logging.getLogger(__name__)
 
 MAX_WEBHOOK_BODY_BYTES = 1024 * 1024
 

@@ -2,14 +2,13 @@
 
 import asyncio
 import base64
-import logging
 import httpx
 from abc import ABC, abstractmethod
 from typing import Protocol, Callable, Awaitable
 
-from .types import STTResult
+from loguru import logger
 
-logger = logging.getLogger(__name__)
+from .types import STTResult
 
 # Retry configuration for transient HTTP errors
 _MAX_RETRIES = 2

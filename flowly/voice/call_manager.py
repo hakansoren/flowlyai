@@ -3,9 +3,10 @@
 import asyncio
 import base64
 import json
-import logging
 import time
 from typing import Callable, Awaitable
+
+from loguru import logger
 
 from .types import CallState, CallStatus, VoiceCall, STTResult
 from .audio import (
@@ -18,10 +19,8 @@ from .audio import (
 from .stt import STTProvider
 from .tts import TTSProvider
 
-logger = logging.getLogger(__name__)
-
 # Configuration
-SILENCE_THRESHOLD_MS = 1500  # Silence duration to trigger transcription
+SILENCE_THRESHOLD_MS = 800  # Silence duration to trigger transcription
 MIN_SPEECH_DURATION_MS = 300  # Minimum speech to process
 SPEECH_ENERGY_THRESHOLD = 500  # RMS threshold for speech detection
 POST_TTS_SUPPRESS_MS = 400  # Brief guard after playback to avoid turn double-trigger
@@ -334,21 +333,26 @@ class CallManager:
                 response = await self.on_transcription(call.call_sid, result.text)
 
                 if response:
-                    # Queue TTS
-                    await self.speak(call.call_sid, response)
-                    queued_response = True
+                    # Check if call is still alive (may have ended during LLM processing)
+                    if call.call_sid not in self.calls:
+                        logger.warning(f"Call {call.call_sid} ended during LLM processing, dropping response")
+                    else:
+                        # Queue TTS
+                        await self.speak(call.call_sid, response)
+                        queued_response = True
 
         except Exception as e:
             logger.error(f"Error processing speech: {e}")
         finally:
-            # Always release turn lock and restore call state
-            if queued_response:
-                # TTS processor will restore ACTIVE/LISTENING when playback ends.
-                call.status = CallStatus.SPEAKING
-                call.is_listening = False
-            else:
-                call.status = CallStatus.ACTIVE
-                call.is_listening = True
+            # Only restore call state if the call is still alive
+            if call.call_sid in self.calls:
+                if queued_response:
+                    # TTS processor will restore ACTIVE/LISTENING when playback ends.
+                    call.status = CallStatus.SPEAKING
+                    call.is_listening = False
+                else:
+                    call.status = CallStatus.ACTIVE
+                    call.is_listening = True
             call.turn_lock = False
 
     async def speak(self, call_sid: str, text: str):
@@ -418,6 +422,11 @@ class CallManager:
                 logger.info(f"Sending {len(mulaw_audio)} bytes audio to Twilio")
                 await self._send_audio(call, mulaw_audio)
 
+                # Wait for Twilio to play the audio before resuming listening.
+                # mu-law is 8kHz, 1 byte per sample → duration = len / 8000 seconds.
+                playback_s = len(mulaw_audio) / TWILIO_SAMPLE_RATE
+                await asyncio.sleep(playback_s)
+
                 # Resume listening
                 call.status = CallStatus.ACTIVE
                 call.is_listening = True
@@ -447,8 +456,9 @@ class CallManager:
             logger.warning(f"No WebSocket for stream {call.stream_sid}")
             return
 
-        # Twilio expects audio in small chunks (20ms = 160 bytes at 8kHz).
-        chunk_size = 160
+        # Send audio in larger chunks to reduce WebSocket message overhead.
+        # Twilio buffers and plays sequentially, so no real-time pacing needed.
+        chunk_size = 8000  # ~1 second of mu-law audio at 8kHz
 
         try:
             for offset in range(0, len(audio), chunk_size):
@@ -460,9 +470,6 @@ class CallManager:
                     "media": {"payload": audio_base64},
                 }
                 await ws.send_text(json.dumps(message))
-
-                duration_ms = max(1, len(chunk) * 1000 // TWILIO_SAMPLE_RATE)
-                await asyncio.sleep(duration_ms / 1000)
 
         except Exception as e:
             logger.error(f"WebSocket send error for stream {call.stream_sid}: {e}")

@@ -1129,9 +1129,11 @@ def gateway(
     from flowly.heartbeat.service import HeartbeatService
     from flowly.gateway.server import GatewayServer
 
+    import logging
     if verbose:
-        import logging
         logging.basicConfig(level=logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.WARNING)
 
     from flowly import __banner__
     console.print(f"[cyan]{__banner__.format(version=__version__)}[/cyan]")

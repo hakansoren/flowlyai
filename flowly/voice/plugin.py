@@ -5,11 +5,11 @@ It connects the call manager with the agent for full tool access.
 """
 
 import asyncio
-import logging
 import time
 from typing import TYPE_CHECKING
 
 import uvicorn
+from loguru import logger
 
 from flowly.config import Config
 from .call_manager import CallManager
@@ -20,8 +20,6 @@ from .webhook import create_voice_app, TwilioClient
 
 if TYPE_CHECKING:
     from flowly.agent import AgentLoop
-
-logger = logging.getLogger(__name__)
 
 
 class VoicePlugin:
