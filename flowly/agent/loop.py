@@ -120,11 +120,11 @@ class AgentLoop:
     
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
-        # File tools
-        self.tools.register(ReadFileTool())
-        self.tools.register(WriteFileTool())
-        self.tools.register(EditFileTool())
-        self.tools.register(ListDirTool())
+        # File tools (sandboxed to workspace + ~/.flowly)
+        self.tools.register(ReadFileTool(workspace=self.workspace))
+        self.tools.register(WriteFileTool(workspace=self.workspace))
+        self.tools.register(EditFileTool(workspace=self.workspace))
+        self.tools.register(ListDirTool(workspace=self.workspace))
         
         # Shell tool (secure)
         from flowly.agent.tools.shell import SecureExecTool
@@ -483,7 +483,7 @@ class AgentLoop:
                 messages=messages_copy,
                 tools=[],
                 model=self.model,
-                temperature=self.temperature,
+                temperature=0.7,
             )
             if response.content and response.content.strip():
                 return response.content.strip()

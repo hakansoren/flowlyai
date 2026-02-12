@@ -302,8 +302,9 @@ Requires Docker to be installed and the user to have Docker permissions."""
         if not command:
             return "Error: command required"
 
-        # Split command into args
-        cmd = ["docker", "exec", container] + command.split()
+        # Use shlex for proper shell quoting support
+        import shlex
+        cmd = ["docker", "exec", container] + shlex.split(command)
         code, stdout, stderr = await self._run_command(cmd)
 
         output = stdout or stderr

@@ -91,8 +91,21 @@ Works on Linux, macOS, and Windows without external dependencies."""
 
     async def _run_powershell(self, cmd: str) -> tuple[int, str]:
         """Run a PowerShell command and return exit code and output."""
-        ps_cmd = f'powershell -NoProfile -Command "{cmd}"'
-        return await self._run_command(ps_cmd)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "powershell", "-NoProfile", "-Command", cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=self.timeout
+            )
+            output = stdout.decode() or stderr.decode()
+            return proc.returncode or 0, output
+        except asyncio.TimeoutError:
+            return -1, f"Command timed out after {self.timeout}s"
+        except Exception as e:
+            return -1, str(e)
 
     async def execute(self, action: str, **kwargs: Any) -> str:
         """Execute a system monitoring action."""

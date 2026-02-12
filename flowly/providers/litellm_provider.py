@@ -37,28 +37,13 @@ class LiteLLMProvider(LLMProvider):
         # Track if using custom endpoint (vLLM, etc.)
         self.is_vllm = bool(api_base) and not self.is_openrouter
 
-        # Configure LiteLLM based on provider
-        if api_key:
-            if self.is_openrouter:
-                # OpenRouter mode - set key
-                os.environ["OPENROUTER_API_KEY"] = api_key
-            elif self.is_vllm:
-                # vLLM/custom endpoint - uses OpenAI-compatible API
-                os.environ["OPENAI_API_KEY"] = api_key
-            elif "anthropic" in default_model:
-                os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
-            elif "openai" in default_model or "gpt" in default_model:
-                os.environ.setdefault("OPENAI_API_KEY", api_key)
-            elif "gemini" in default_model.lower():
-                os.environ.setdefault("GEMINI_API_KEY", api_key)
-            elif "zhipu" in default_model or "glm" in default_model or "zai" in default_model:
-                os.environ.setdefault("ZHIPUAI_API_KEY", api_key)
-            elif "xai" in default_model or "grok" in default_model:
-                os.environ.setdefault("XAI_API_KEY", api_key)
-        
+        # API keys are passed directly via kwargs in chat() (line 129-130).
+        # We intentionally do NOT write keys to os.environ to prevent
+        # exposure to child processes and /proc/[pid]/environ.
+
         if api_base:
             litellm.api_base = api_base
-        
+
         # Disable LiteLLM logging noise
         litellm.suppress_debug_info = True
     
@@ -140,10 +125,13 @@ class LiteLLMProvider(LLMProvider):
             response = await acompletion(**kwargs)
             return self._parse_response(response)
         except Exception as e:
-            logger.error(f"LLM call error: {e}")
-            # Return error as content for graceful handling
+            # Redact potential API keys from error messages
+            error_msg = str(e)
+            if self.api_key and len(self.api_key) > 8:
+                error_msg = error_msg.replace(self.api_key, "***")
+            logger.error(f"LLM call error: {error_msg}")
             return LLMResponse(
-                content=f"Error calling LLM: {str(e)}",
+                content=f"Error calling LLM: {error_msg}",
                 finish_reason="error",
             )
     

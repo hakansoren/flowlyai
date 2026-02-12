@@ -328,7 +328,7 @@ Respond to the user now:"""
                     params={"PhoneNumber": phone_number},
                 )
                 if resp.status_code != 200:
-                    logger.error(f"Twilio API error listing numbers: {resp.status_code} {resp.text}")
+                    logger.error(f"Twilio API error listing numbers: HTTP {resp.status_code}")
                     return
 
                 numbers = resp.json().get("incoming_phone_numbers", [])
@@ -350,7 +350,7 @@ Respond to the user now:"""
                     },
                 )
                 if update_resp.status_code != 200:
-                    logger.error(f"Twilio API error updating webhook: {update_resp.status_code} {update_resp.text}")
+                    logger.error(f"Twilio API error updating webhook: HTTP {update_resp.status_code}")
                     return
 
                 logger.info(f"Twilio webhook URL updated to {webhook_url}")
