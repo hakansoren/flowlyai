@@ -158,12 +158,15 @@ Examples:
 
     async def _make_call(self, to: str, greeting: str | None = None, script: str | None = None) -> str:
         """Make a call."""
-        to_number = (to or "").strip() or self._resolve_default_to_number()
+        to_number = str(to or "").strip() or self._resolve_default_to_number()
         if not to_number:
             return (
                 "Error: 'to' phone number is required. "
                 "You can also set integrations.voice.default_to_number in config."
             )
+        # Ensure E.164 format
+        if to_number[0].isdigit():
+            to_number = f"+{to_number}"
 
         initial_greeting = self._resolve_initial_greeting(greeting, script)
 
