@@ -262,5 +262,5 @@ class Config(BaseSettings):
         return None
     
     class Config:
-        env_prefix = "NANOBOT_"
+        env_prefix = "FLOWLY_"
         env_nested_delimiter = "__"

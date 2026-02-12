@@ -248,7 +248,6 @@ class AgentLoop:
         """
         voice_patterns = (
             r'User said:\s*"(.*?)"',
-            r'Kullanıcı şunu söyledi:\s*"(.*?)"',
         )
         for pattern in voice_patterns:
             match = re.search(pattern, content, flags=re.DOTALL | re.IGNORECASE)
@@ -264,8 +263,19 @@ class AgentLoop:
 
         intent_text = self._extract_action_intent_text(content)
         action_patterns = (
+            # Call / phone
+            r"\bcall\b",
+            r"\bdial\b",
+            r"\bphone\b",
+            r"\bring\b",
             r"\barasana\b",
             r"\barar\s+m[ıi]s[ıi]n\b",
+            r"\baray[ıi]p\b",
+            r"\barama\b",
+            r"\btelefon(?:la)?\b",
+            # Retry
+            r"\btry\s+again\b",
+            r"\bretry\b",
             r"\btekrar\s+dene\b",
             r"\btekrar\s+b[iı]\s+dene\b",
             r"\btekrar\s+bir\s+dene\b",
@@ -273,27 +283,29 @@ class AgentLoop:
             r"\btekrar\b.*\bden\w+\b",
             r"\byeniden\s+dene\b",
             r"\bbir\s+daha\s+dene\b",
-            r"\btry\s+again\b",
-            r"\bretry\b",
-            r"\baray[ıi]p\b",
-            r"\barama\b",
-            r"\btelefon(?:la)?\b",
-            r"\bcall\b",
-            r"\bhat[ıi]rlat\b",
+            # Reminder / notification
             r"\bremind(?:er)?\b",
+            r"\bnotify\b",
+            r"\balert\b",
+            r"\bhat[ıi]rlat\b",
             r"\bhaber\s+ver\b",
             r"\bbildir\b",
-            r"\bnotify\b",
+            # Schedule / cron
             r"\bschedule\b",
             r"\bplanla\b",
             r"\bcron\s+olu[şs]tur\b",
-            r"\bg[öo]nder\b",
+            # Send / share
             r"\bsend\b",
+            r"\bshare\b",
+            r"\bg[öo]nder\b",
             r"\bpayla[şs]\b",
-            r"\bekran\s+g[öo]r[üu]nt[üu]s[üu]\b",
+            # Screenshot
             r"\bscreenshot\b",
             r"\bss\b",
+            r"\bekran\s+g[öo]r[üu]nt[üu]s[üu]\b",
+            # Generic
             r"\brun\s+tool\b",
+            r"\bexecute\b",
         )
         return any(re.search(pattern, intent_text) for pattern in action_patterns)
 
@@ -301,6 +313,10 @@ class AgentLoop:
         """Detect short follow-up prompts that usually mean 'retry previous action'."""
         intent_text = self._extract_action_intent_text(content)
         retry_patterns = (
+            r"\btry\s+again\b",
+            r"\bretry\b",
+            r"\bdo\s+it\s+again\b",
+            r"\bone\s+more\s+time\b",
             r"\btekrar\s+dene\b",
             r"\btekrar\s+b[iı]\s+dene\b",
             r"\btekrar\s+bir\s+dene\b",
@@ -308,8 +324,6 @@ class AgentLoop:
             r"\btekrar\b.*\bden\w+\b",
             r"\byeniden\s+dene\b",
             r"\bbir\s+daha\s+dene\b",
-            r"\btry\s+again\b",
-            r"\bretry\b",
         )
         return any(re.search(pattern, intent_text) for pattern in retry_patterns)
 
@@ -317,12 +331,14 @@ class AgentLoop:
         """Detect explicit cancellation for pending actions."""
         intent_text = self._extract_action_intent_text(content)
         cancel_patterns = (
+            r"\bcancel\b",
+            r"\bstop\b",
+            r"\bforget\s+it\b",
+            r"\bnever\s*mind\b",
+            r"\babort\b",
             r"\bvazge[cç]\b",
             r"\biptal\b",
             r"\bbo[sş]ver\b",
-            r"\bforget\s+it\b",
-            r"\bcancel\b",
-            r"\bstop\b",
         )
         return any(re.search(pattern, intent_text) for pattern in cancel_patterns)
 
