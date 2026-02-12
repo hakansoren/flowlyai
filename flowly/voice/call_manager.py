@@ -46,10 +46,12 @@ class CallManager:
         stt_provider: STTProvider,
         tts_provider: TTSProvider,
         on_transcription: Callable[[str, str], Awaitable[str]],  # (call_sid, text) -> response
+        on_call_ended: Callable[["CallState"], Awaitable[None]] | None = None,
     ):
         self.stt = stt_provider
         self.tts = tts_provider
         self.on_transcription = on_transcription
+        self.on_call_ended = on_call_ended
 
         # Active calls by call_sid
         self.calls: dict[str, CallState] = {}
@@ -154,6 +156,13 @@ class CallManager:
         call.status = CallStatus.COMPLETED
         call.is_listening = False
         call.ended_at = time.time()
+
+        # Post-call processing callback (runs BEFORE state cleanup)
+        if self.on_call_ended:
+            try:
+                await self.on_call_ended(call)
+            except Exception as e:
+                logger.error(f"on_call_ended callback failed: {e}")
 
         # Cancel TTS task
         if call_sid in self._tts_tasks:

@@ -6,6 +6,7 @@ It connects the call manager with the agent for full tool access.
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING
 
 import uvicorn
@@ -14,6 +15,7 @@ from flowly.config import Config
 from .call_manager import CallManager
 from .stt import create_stt_provider
 from .tts import create_tts_provider
+from .types import CallState
 from .webhook import create_voice_app, TwilioClient
 
 if TYPE_CHECKING:
@@ -76,6 +78,7 @@ class VoicePlugin:
             stt_provider=self.stt,
             tts_provider=self.tts,
             on_transcription=self._handle_transcription,
+            on_call_ended=self._handle_call_ended,
         )
 
         # Store webhook base URL — may be set later by ngrok tunnel
@@ -195,6 +198,106 @@ Respond to the user now:"""
         except Exception as e:
             logger.error(f"Agent error during voice call: {e}")
             return "An error occurred, please try again."
+
+    async def _handle_call_ended(self, call: CallState) -> None:
+        """Post-call processing: generate summary and inject into session.
+
+        Called by CallManager before call state is cleaned up.
+        """
+        session_key = call.session_key
+        if not session_key:
+            return
+
+        duration = (call.ended_at or time.time()) - (call.answered_at or call.started_at)
+
+        session = self.agent.sessions.get_or_create(session_key)
+
+        # Find call messages in session (identified by [ACTIVE PHONE CALL] prefix)
+        call_messages = [
+            m for m in session.messages
+            if "[ACTIVE PHONE CALL]" in m.get("content", "")
+        ]
+
+        if not call_messages:
+            # Short/silent call — just log metadata
+            session.add_message("system", (
+                f"[Call Ended] {call.call_sid} | "
+                f"{call.from_number} -> {call.to_number} | "
+                f"{duration:.0f}s | No conversation"
+            ))
+            self.agent.sessions.save(session)
+            return
+
+        # Generate model summary of the call
+        summary = await self._generate_call_summary(
+            call=call, session=session, duration=duration
+        )
+
+        # Inject into session as system message
+        session.add_message("system", (
+            f"[Call Summary] {call.from_number} -> {call.to_number} | {duration:.0f}s\n"
+            f"{summary}"
+        ))
+        self.agent.sessions.save(session)
+
+        # Send notification to Telegram
+        if call.telegram_chat_id:
+            from flowly.bus.events import OutboundMessage
+            await self.agent.bus.publish_outbound(OutboundMessage(
+                channel="telegram",
+                chat_id=call.telegram_chat_id,
+                content=f"Call ended ({duration:.0f}s)\n\n{summary}",
+            ))
+
+    async def _generate_call_summary(
+        self, call: CallState, session, duration: float
+    ) -> str:
+        """Use LLM to summarize the voice call conversation."""
+        history = session.get_history(max_messages=50)
+
+        # Extract clean transcript from [ACTIVE PHONE CALL] messages
+        call_turns: list[str] = []
+        for msg in history:
+            content = msg.get("content", "")
+            if "[ACTIVE PHONE CALL]" in content and 'User said: "' in content:
+                try:
+                    start = content.index('User said: "') + len('User said: "')
+                    end = content.index('"', start)
+                    call_turns.append(f"User: {content[start:end]}")
+                except ValueError:
+                    pass
+            elif msg.get("role") == "assistant" and call_turns:
+                call_turns.append(f"Assistant: {content}")
+
+        if not call_turns:
+            return "Call completed with no significant conversation."
+
+        transcript_text = "\n".join(call_turns[-20:])
+
+        summary_prompt = (
+            f"Summarize this phone call in 2-3 sentences. "
+            f"Include key topics discussed and any action items.\n\n"
+            f"Call: {call.from_number} -> {call.to_number} ({duration:.0f}s)\n\n"
+            f"Transcript:\n{transcript_text}"
+        )
+
+        try:
+            response = await self.agent.provider.chat(
+                messages=[
+                    {"role": "system", "content": "You are summarizing a phone call. Be concise."},
+                    {"role": "user", "content": summary_prompt},
+                ],
+                tools=[],
+                model=self.agent.model,
+                temperature=0.3,
+            )
+            if response.content and response.content.strip():
+                return response.content.strip()
+        except Exception as e:
+            logger.error(f"Call summary generation failed: {e}")
+
+        # Fallback: simple transcript excerpt
+        return f"Call with {len(call_turns)} exchanges. Last topic: {call_turns[-1][:100]}"
 
     def _start_ngrok_tunnel_sync(self, port: int, authtoken: str) -> str:
         """Start ngrok tunnel (blocking). Must be called via asyncio.to_thread()."""
