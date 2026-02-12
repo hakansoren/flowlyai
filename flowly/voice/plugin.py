@@ -193,8 +193,14 @@ Respond to the user now:"""
         session_key = call.session_key or f"voice:{call_sid}"
 
         try:
-            response = await self.agent.process_direct(prompt, session_key=session_key)
+            response = await asyncio.wait_for(
+                self.agent.process_direct(prompt, session_key=session_key),
+                timeout=30.0,
+            )
             return response or "Sorry, something went wrong. Could you say that again?"
+        except asyncio.TimeoutError:
+            logger.error(f"Agent timeout during voice call {call_sid}")
+            return "Sorry, I'm taking too long to respond. Please try again."
         except Exception as e:
             logger.error(f"Agent error during voice call: {e}")
             return "An error occurred, please try again."

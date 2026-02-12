@@ -36,8 +36,8 @@ class CallState:
     is_listening: bool = True
     pending_audio: list[bytes] = field(default_factory=list)
 
-    # TTS queue for serialized playback
-    tts_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
+    # TTS queue for serialized playback (bounded to prevent memory exhaustion)
+    tts_queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=50))
     tts_playing: bool = False
 
     # Speech detection
@@ -71,9 +71,9 @@ class CallState:
     duplicate_tts_streak: int = 0
 
     def __post_init__(self):
-        # Ensure tts_queue is always an asyncio.Queue
+        # Ensure tts_queue is always a bounded asyncio.Queue
         if not isinstance(self.tts_queue, asyncio.Queue):
-            self.tts_queue = asyncio.Queue()
+            self.tts_queue = asyncio.Queue(maxsize=50)
 
 
 @dataclass

@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import json
 import logging
 import time
 from typing import Callable, Awaitable
@@ -28,6 +29,7 @@ TRANSCRIPT_DEDUPE_WINDOW_S = 4.0
 TTS_DEDUPE_WINDOW_S = 10.0
 DUPLICATE_USER_DROP_ALARM = 3
 DUPLICATE_TTS_STREAK_ALARM = 3
+MAX_SPEECH_BUFFER_CHUNKS = 750  # ~30s at 20ms chunks — prevents unbounded memory growth
 
 
 class CallManager:
@@ -58,6 +60,9 @@ class CallManager:
 
         # WebSocket connections by stream_sid
         self.streams: dict[str, any] = {}  # stream_sid -> websocket
+
+        # Lock to protect speech_buffer reads/writes across coroutines
+        self._buffer_lock = asyncio.Lock()
 
         # Background tasks
         self._silence_detector_task: asyncio.Task | None = None
@@ -210,15 +215,21 @@ class CallManager:
         # Check for speech
         has_speech = detect_speech_energy(pcm_audio, SPEECH_ENERGY_THRESHOLD)
 
-        if has_speech:
-            # Add to speech buffer
-            call.speech_buffer.append(pcm_audio)
-            call.last_speech_time = time.time()
-            call.silence_start = None
-        else:
-            # Start silence timer
-            if call.silence_start is None:
-                call.silence_start = time.time()
+        async with self._buffer_lock:
+            if has_speech:
+                # Add to speech buffer (bounded)
+                if len(call.speech_buffer) < MAX_SPEECH_BUFFER_CHUNKS:
+                    call.speech_buffer.append(pcm_audio)
+                else:
+                    # Drop oldest chunk to make room (sliding window)
+                    call.speech_buffer.pop(0)
+                    call.speech_buffer.append(pcm_audio)
+                call.last_speech_time = time.time()
+                call.silence_start = None
+            else:
+                # Start silence timer
+                if call.silence_start is None:
+                    call.silence_start = time.time()
 
     async def _silence_detector_loop(self):
         """Background task to detect silence and trigger transcription."""
@@ -259,25 +270,27 @@ class CallManager:
         if not call.speech_buffer:
             return
 
+        # Acquire turn lock — always released in finally block
         call.turn_lock = True
-
-        # Combine all audio chunks
-        combined_audio = b''.join(call.speech_buffer)
-        call.speech_buffer.clear()
-        call.silence_start = None
-
-        # Check minimum duration
-        duration_ms = calculate_audio_duration_ms(combined_audio, 16000)
-        if duration_ms < MIN_SPEECH_DURATION_MS:
-            logger.debug(f"Speech too short: {duration_ms}ms, skipping")
-            return
-
-        # Stop listening while processing; don't accumulate overlapping user turns.
-        call.status = CallStatus.PROCESSING
-        call.is_listening = False
         queued_response = False
 
         try:
+            # Combine all audio chunks under lock
+            async with self._buffer_lock:
+                combined_audio = b''.join(call.speech_buffer)
+                call.speech_buffer.clear()
+                call.silence_start = None
+
+            # Check minimum duration
+            duration_ms = calculate_audio_duration_ms(combined_audio, 16000)
+            if duration_ms < MIN_SPEECH_DURATION_MS:
+                logger.debug(f"Speech too short: {duration_ms}ms, skipping")
+                return
+
+            # Stop listening while processing; don't accumulate overlapping user turns.
+            call.status = CallStatus.PROCESSING
+            call.is_listening = False
+
             # Transcribe
             result = await self.stt.transcribe(combined_audio)
 
@@ -328,6 +341,7 @@ class CallManager:
         except Exception as e:
             logger.error(f"Error processing speech: {e}")
         finally:
+            # Always release turn lock and restore call state
             if queued_response:
                 # TTS processor will restore ACTIVE/LISTENING when playback ends.
                 call.status = CallStatus.SPEAKING
@@ -413,6 +427,7 @@ class CallManager:
                 break
             except Exception as e:
                 logger.error(f"Error in TTS processor: {e}")
+                # Always restore state so the call doesn't get stuck
                 call.status = CallStatus.ACTIVE
                 call.is_listening = True
 
@@ -435,8 +450,6 @@ class CallManager:
         # Twilio expects audio in small chunks (20ms = 160 bytes at 8kHz).
         chunk_size = 160
 
-        import json
-
         try:
             for offset in range(0, len(audio), chunk_size):
                 chunk = audio[offset:offset + chunk_size]
@@ -452,7 +465,9 @@ class CallManager:
                 await asyncio.sleep(duration_ms / 1000)
 
         except Exception as e:
-            logger.error(f"Error sending audio: {e}")
+            logger.error(f"WebSocket send error for stream {call.stream_sid}: {e}")
+            # Unregister dead WebSocket to prevent further send attempts
+            self.streams.pop(call.stream_sid, None)
 
     async def end_call(self, call_sid: str, message: str | None = None):
         """End a call with optional goodbye message.

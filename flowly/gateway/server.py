@@ -7,6 +7,9 @@ from typing import Callable, Awaitable
 from aiohttp import web
 from loguru import logger
 
+# Maximum allowed request body size (1MB)
+_MAX_BODY_SIZE = 1024 * 1024
+
 
 class GatewayServer:
     """
@@ -40,7 +43,7 @@ class GatewayServer:
 
     def _create_app(self) -> web.Application:
         """Create the aiohttp application."""
-        app = web.Application()
+        app = web.Application(client_max_size=_MAX_BODY_SIZE)
         app.router.add_get("/health", self._handle_health)
         if self.on_voice_message:
             app.router.add_post("/api/voice/message", self._handle_voice_message)
@@ -72,6 +75,12 @@ class GatewayServer:
             from_number = data.get("from", "")
             text = data.get("text", "")
 
+            # Input validation
+            if not call_sid or len(call_sid) > 128:
+                return web.json_response({"error": "Invalid call_sid"}, status=400)
+            if len(text) > 50000:
+                return web.json_response({"error": "Message too large"}, status=413)
+
             logger.info(f"Voice message from {from_number}: {text[:50]}...")
 
             if not self.on_voice_message:
@@ -80,8 +89,11 @@ class GatewayServer:
                     status=500
                 )
 
-            # Get response from agent
-            response = await self.on_voice_message(call_sid, from_number, text)
+            # Get response from agent with timeout
+            response = await asyncio.wait_for(
+                self.on_voice_message(call_sid, from_number, text),
+                timeout=30.0,
+            )
 
             return web.json_response({"response": response})
 
@@ -90,10 +102,17 @@ class GatewayServer:
                 {"error": "Invalid JSON"},
                 status=400
             )
+        except asyncio.TimeoutError:
+            logger.error("Voice message handler timeout")
+            return web.json_response(
+                {"error": "Handler timeout"},
+                status=504
+            )
         except Exception as e:
             logger.error(f"Error handling voice message: {e}")
+            # Don't expose internal error details to client
             return web.json_response(
-                {"error": str(e)},
+                {"error": "Internal server error"},
                 status=500
             )
 
