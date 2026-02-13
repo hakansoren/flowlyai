@@ -121,25 +121,28 @@ class DelegateTool(Tool):
                     agent, agent_id, message, self._workspace, timeout=1800,
                 )
                 content = (
-                    f"[SYSTEM: Background task completed. @{agent_id} has finished. "
-                    f"Summarize the result below for the user in your own words.]\n\n"
-                    f"@{agent_id} result:\n{result}"
+                    f"[DELEGATE_RESULT:{agent_id}] "
+                    f"@{agent_id} has completed the task. "
+                    f"Summarize the result for the user in your own words.\n\n"
+                    f"Result:\n{result}"
                 )
             except Exception as e:
                 logger.error(f"Background delegation to @{agent_id} failed: {e}")
                 content = (
-                    f"[SYSTEM: Background task failed. @{agent_id} encountered an error. "
-                    f"Tell the user what happened.]\n\n"
-                    f"@{agent_id} error: {e}"
+                    f"[DELEGATE_RESULT:{agent_id}] "
+                    f"@{agent_id} failed with an error. "
+                    f"Tell the user what happened.\n\n"
+                    f"Error: {e}"
                 )
 
-            # Send result back through the agent (inbound) so the model
-            # processes it and responds in its own words
+            # Send back through agent loop so the model summarizes it.
+            # The DELEGATE_RESULT marker tells the routing layer to temporarily
+            # remove the delegate_to tool, preventing re-delegation loops.
             if channel and chat_id:
                 await self._bus.publish_inbound(
                     InboundMessage(
                         channel=channel,
-                        sender_id="system",
+                        sender_id="delegate_result",
                         chat_id=chat_id,
                         content=content,
                     )

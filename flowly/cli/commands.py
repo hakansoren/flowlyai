@@ -1259,6 +1259,16 @@ def gateway(
             if msg.channel == "system":
                 return await _original_process(msg)
 
+            # Background delegate result — model should summarize, NOT re-delegate
+            if msg.content.startswith("[DELEGATE_RESULT:"):
+                # Temporarily remove delegate_to tool to prevent loops
+                agent.tools.unregister("delegate_to")
+                try:
+                    return await _original_process(msg)
+                finally:
+                    # Restore the tool for future messages
+                    agent.tools.register(delegate_tool)
+
             # Route @mentions
             routing = ma_router.route(msg.content)
 
