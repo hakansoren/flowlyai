@@ -582,20 +582,11 @@ Please open an issue first for large changes.
 ## Changelog
 
 <details>
-<summary><strong>2026-02-11</strong> — Multi-Agent Orchestration (v1.0.0)</summary>
+<summary><strong>2026-02-11</strong> — Multi-agent, X API, command execution (v1.0.0)</summary>
 
-- Multi-agent system: delegate tasks to Claude Code, Codex, or any CLI agent
-- `@mention` routing — `@coder fix bug` sends directly to the agent
-- Team chains and fan-out — agents hand off work to teammates
-- `delegate_to` tool — main agent can delegate via tool call (fire-and-forget)
-- Interactive setup wizard: `flowly setup agents`
-- Agent working directories with auto-generated teammate config
-
-</details>
-
-<details>
-<summary><strong>2026-02-11</strong> — X API, command execution setup, Apache 2.0</summary>
-
+- Multi-agent delegation: send tasks to Claude Code or Codex via `@mention` or `delegate_to` tool
+- Fire-and-forget execution — agents run in background, results delivered asynchronously
+- Interactive agent setup wizard: `flowly setup agents`
 - X (Twitter) API integration (post, search, timeline, profiles)
 - xAI/Grok as LiteLLM provider
 - Command execution setup wizard
