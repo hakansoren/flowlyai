@@ -125,6 +125,13 @@ def setup_slack_cmd():
     setup_slack()
 
 
+@setup_app.command("agents")
+def setup_agents_cmd():
+    """Set up multi-agent orchestration."""
+    from flowly.cli.setup import setup_agents
+    setup_agents()
+
+
 # ============================================================================
 # Persona Commands
 # ============================================================================
@@ -1215,6 +1222,65 @@ def gateway(
         x_config=config.integrations.x,
         persona=active_persona,
     )
+
+    # Multi-agent setup (if agents are configured in config.json)
+    multi_agents = config.agents.agents
+    multi_teams = config.agents.teams
+
+    if multi_agents:
+        from flowly.multiagent.router import AgentRouter
+        from flowly.multiagent.orchestrator import TeamOrchestrator
+        from flowly.multiagent.setup import ensure_agent_directory
+        from flowly.agent.tools.delegate import DelegateTool
+
+        ma_router = AgentRouter(multi_agents, multi_teams)
+        ma_orchestrator = TeamOrchestrator(ma_router)
+
+        # Setup agent working directories
+        agents_workspace = config.workspace_path / "agents"
+        for aid, acfg in multi_agents.items():
+            agent_dir = agents_workspace / aid
+            ensure_agent_directory(agent_dir, aid, multi_agents, multi_teams)
+
+        # Register delegate_to tool on main agent
+        delegate_tool = DelegateTool(multi_agents, multi_teams, agents_workspace, bus)
+        agent.tools.register(delegate_tool)
+
+        # Wrap _process_message with multi-agent routing
+        _original_process = agent._process_message
+
+        async def _routed_process(msg):
+            from flowly.bus.events import InboundMessage as _IB, OutboundMessage as _OB
+
+            # Update delegate tool context so background results go to the right chat
+            delegate_tool.set_context(msg.channel, msg.chat_id)
+
+            # System messages bypass routing
+            if msg.channel == "system":
+                return await _original_process(msg)
+
+            # Route @mentions
+            routing = ma_router.route(msg.content)
+
+            if routing.agent_id == "default" or routing.agent_id not in multi_agents:
+                return await _original_process(msg)
+
+            # @mention detected — rewrite message so the main agent uses delegate_to tool
+            # This way the model responds naturally AND the task runs in background
+            msg.content = (
+                f"[SYSTEM: User wants to talk to @{routing.agent_id}. "
+                f"Use the delegate_to tool with agent_id=\"{routing.agent_id}\" "
+                f"and the following message.]\n\n{routing.message}"
+            )
+            return await _original_process(msg)
+
+        agent._process_message = _routed_process
+
+        agent_names = [f"@{aid} ({acfg.name})" for aid, acfg in multi_agents.items()]
+        console.print(f"[green]✓[/green] Multi-agent: {', '.join(agent_names)}")
+        if multi_teams:
+            team_names = [f"@{tid} ({tcfg.name})" for tid, tcfg in multi_teams.items()]
+            console.print(f"[green]✓[/green] Teams: {', '.join(team_names)}")
 
     # Set cron job callback (needs agent to be created first)
     async def on_cron_job(job: CronJob) -> str | None:

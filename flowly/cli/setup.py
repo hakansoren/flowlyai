@@ -757,6 +757,370 @@ def setup_exec() -> bool:
     return True
 
 
+def setup_agents() -> bool:
+    """
+    Interactive multi-agent setup wizard.
+
+    Returns True if setup was successful.
+    """
+    from flowly.config.loader import load_config, save_config
+    from flowly.config.schema import MultiAgentConfig, MultiAgentTeamConfig
+
+    try:
+        from InquirerPy import inquirer
+    except Exception:
+        inquirer = None
+
+    console.print("\n[bold cyan]Multi-Agent Setup[/bold cyan]")
+    console.print("─" * 40)
+
+    config = load_config()
+    existing_agents = config.agents.agents
+    existing_teams = config.agents.teams
+
+    if existing_agents:
+        console.print(f"\n[green]✓[/green] {len(existing_agents)} agent(s) configured:")
+        for aid, acfg in existing_agents.items():
+            console.print(f"  • [cyan]@{aid}[/cyan] — {acfg.name or aid} ({acfg.provider}/{acfg.model})")
+        if existing_teams:
+            console.print(f"\n  {len(existing_teams)} team(s):")
+            for tid, tcfg in existing_teams.items():
+                console.print(f"  • [cyan]@{tid}[/cyan] — {tcfg.name or tid} (agents: {', '.join(tcfg.agents)})")
+
+    # Main menu loop
+    while True:
+        console.print()
+        actions = [
+            ("Add an agent", "add_agent"),
+            ("Create a team", "create_team"),
+        ]
+        if existing_agents:
+            actions.append(("Remove an agent", "remove_agent"))
+        if existing_teams:
+            actions.append(("Remove a team", "remove_team"))
+        actions.append(("Done", "done"))
+
+        if inquirer is not None:
+            inq_choices = [{"name": label, "value": value} for label, value in actions]
+            try:
+                action = inquirer.select(
+                    message="What would you like to do?",
+                    choices=inq_choices,
+                    default="add_agent",
+                ).execute()
+            except (KeyboardInterrupt, EOFError):
+                break
+        else:
+            for idx, (label, _) in enumerate(actions, start=1):
+                console.print(f"  [cyan]{idx}.[/cyan] {label}")
+            choice = Prompt.ask(
+                "Choose action",
+                choices=[str(i) for i in range(1, len(actions) + 1)],
+                default="1",
+            )
+            action = actions[int(choice) - 1][1]
+
+        if action == "done":
+            break
+
+        elif action == "add_agent":
+            _wizard_add_agent(config, inquirer)
+            save_config(config)
+            existing_agents = config.agents.agents
+            existing_teams = config.agents.teams
+
+        elif action == "create_team":
+            if len(config.agents.agents) < 2:
+                console.print("[yellow]You need at least 2 agents to create a team.[/yellow]")
+                continue
+            _wizard_create_team(config, inquirer)
+            save_config(config)
+            existing_agents = config.agents.agents
+            existing_teams = config.agents.teams
+
+        elif action == "remove_agent":
+            _wizard_remove_agent(config, inquirer)
+            save_config(config)
+            existing_agents = config.agents.agents
+            existing_teams = config.agents.teams
+
+        elif action == "remove_team":
+            _wizard_remove_team(config, inquirer)
+            save_config(config)
+            existing_agents = config.agents.agents
+            existing_teams = config.agents.teams
+
+    # Summary
+    agent_count = len(config.agents.agents)
+    team_count = len(config.agents.teams)
+    if agent_count:
+        console.print(f"\n[green]✓ Multi-agent setup complete![/green]")
+        console.print(f"  {agent_count} agent(s), {team_count} team(s)")
+        console.print(f"\n[dim]Usage:[/dim]")
+        console.print(f"  • Direct agent: [cyan]@coder fix the login bug[/cyan]")
+        if team_count:
+            console.print(f"  • Team:         [cyan]@dev fix the login bug[/cyan]")
+        console.print(f"  • Default:      Messages without @mention go to Flowly agent")
+    else:
+        console.print("\n[dim]No agents configured. Single-agent mode (default).[/dim]")
+
+    return True
+
+
+def _wizard_add_agent(config, inquirer) -> None:
+    """Sub-wizard: add a new agent."""
+    from flowly.config.schema import MultiAgentConfig
+
+    console.print("\n[bold]Add Agent[/bold]")
+
+    # Agent ID
+    while True:
+        agent_id = Prompt.ask("  Agent ID (e.g., coder, reviewer)").strip().lower()
+        if not agent_id:
+            console.print("  [red]Agent ID is required[/red]")
+            continue
+        if not agent_id.isidentifier() and not agent_id.replace("-", "_").isidentifier():
+            console.print("  [red]Agent ID must be alphanumeric (a-z, 0-9, -, _)[/red]")
+            continue
+        if agent_id in config.agents.agents:
+            console.print(f"  [yellow]Agent '{agent_id}' already exists[/yellow]")
+            if not Confirm.ask("  Overwrite?", default=False):
+                return
+        break
+
+    # Display name
+    name = Prompt.ask("  Display name", default=agent_id.replace("-", " ").replace("_", " ").title()).strip()
+
+    # Provider
+    console.print("\n  [bold]Provider:[/bold]")
+    console.print("    [cyan]1.[/cyan] Anthropic (Claude Code) [dim](recommended)[/dim]")
+    console.print("    [cyan]2.[/cyan] OpenAI (Codex)")
+
+    provider_choice = Prompt.ask("  Choose provider", choices=["1", "2"], default="1")
+    provider = "anthropic" if provider_choice == "1" else "openai"
+
+    # Model
+    if provider == "anthropic":
+        console.print("\n  [bold]Claude model:[/bold]")
+        console.print("    [cyan]1.[/cyan] sonnet [dim](fast, recommended)[/dim]")
+        console.print("    [cyan]2.[/cyan] opus   [dim](smartest)[/dim]")
+        console.print("    [cyan]3.[/cyan] haiku  [dim](fastest, cheapest)[/dim]")
+        console.print("    [cyan]4.[/cyan] custom")
+
+        model_choice = Prompt.ask("  Choose model", choices=["1", "2", "3", "4"], default="1")
+        model_map = {"1": "sonnet", "2": "opus", "3": "haiku"}
+        if model_choice == "4":
+            model = Prompt.ask("  Enter model name").strip()
+        else:
+            model = model_map[model_choice]
+    else:
+        console.print("\n  [bold]Codex model:[/bold]")
+        console.print("    [cyan]1.[/cyan] gpt-5.3-codex [dim](recommended)[/dim]")
+        console.print("    [cyan]2.[/cyan] gpt-5.2")
+        console.print("    [cyan]3.[/cyan] custom")
+
+        model_choice = Prompt.ask("  Choose model", choices=["1", "2", "3"], default="1")
+        model_map = {"1": "gpt-5.3-codex", "2": "gpt-5.2"}
+        if model_choice == "3":
+            model = Prompt.ask("  Enter model name").strip()
+        else:
+            model = model_map[model_choice]
+
+    # Working directory (optional)
+    default_dir = f"~/.flowly/agents/{agent_id}"
+    working_dir = Prompt.ask("  Working directory", default=default_dir).strip()
+    if working_dir == default_dir:
+        working_dir = ""  # Use default
+
+    # Create and save
+    agent_cfg = MultiAgentConfig(
+        name=name,
+        provider=provider,
+        model=model,
+        working_directory=working_dir,
+    )
+    config.agents.agents[agent_id] = agent_cfg
+    console.print(f"\n  [green]✓[/green] Agent [cyan]@{agent_id}[/cyan] added ({provider}/{model})")
+
+
+def _wizard_create_team(config, inquirer) -> None:
+    """Sub-wizard: create a team from existing agents."""
+    from flowly.config.schema import MultiAgentTeamConfig
+
+    console.print("\n[bold]Create Team[/bold]")
+
+    agent_ids = list(config.agents.agents.keys())
+    if len(agent_ids) < 2:
+        console.print("  [yellow]Need at least 2 agents to create a team.[/yellow]")
+        return
+
+    # Team ID
+    while True:
+        team_id = Prompt.ask("  Team ID (e.g., dev, qa)").strip().lower()
+        if not team_id:
+            console.print("  [red]Team ID is required[/red]")
+            continue
+        if team_id in config.agents.teams:
+            console.print(f"  [yellow]Team '{team_id}' already exists[/yellow]")
+            if not Confirm.ask("  Overwrite?", default=False):
+                return
+        break
+
+    # Display name
+    name = Prompt.ask("  Team name", default=team_id.replace("-", " ").replace("_", " ").title()).strip()
+
+    # Select agents
+    console.print(f"\n  [bold]Select team members:[/bold]")
+    if inquirer is not None:
+        agent_choices = [
+            {"name": f"@{aid} — {config.agents.agents[aid].name or aid} ({config.agents.agents[aid].provider}/{config.agents.agents[aid].model})", "value": aid}
+            for aid in agent_ids
+        ]
+        try:
+            selected_agents = inquirer.checkbox(
+                message="Select agents (Space to toggle, Enter to confirm):",
+                choices=agent_choices,
+            ).execute()
+        except (KeyboardInterrupt, EOFError):
+            return
+    else:
+        for idx, aid in enumerate(agent_ids, start=1):
+            acfg = config.agents.agents[aid]
+            console.print(f"    [cyan]{idx}.[/cyan] @{aid} — {acfg.name or aid} ({acfg.provider}/{acfg.model})")
+        console.print(f"\n  [dim]Enter agent numbers separated by commas (e.g., 1,2)[/dim]")
+        selection = Prompt.ask("  Select agents").strip()
+        try:
+            indices = [int(x.strip()) - 1 for x in selection.split(",")]
+            selected_agents = [agent_ids[i] for i in indices if 0 <= i < len(agent_ids)]
+        except (ValueError, IndexError):
+            console.print("  [red]Invalid selection[/red]")
+            return
+
+    if len(selected_agents) < 2:
+        console.print("  [yellow]A team needs at least 2 agents[/yellow]")
+        return
+
+    # Leader agent
+    console.print(f"\n  [bold]Choose team leader[/bold] [dim](receives @{team_id} messages first)[/dim]")
+    if inquirer is not None:
+        leader_choices = [
+            {"name": f"@{aid}", "value": aid}
+            for aid in selected_agents
+        ]
+        try:
+            leader = inquirer.select(
+                message="Select leader:",
+                choices=leader_choices,
+                default=selected_agents[0],
+            ).execute()
+        except (KeyboardInterrupt, EOFError):
+            return
+    else:
+        for idx, aid in enumerate(selected_agents, start=1):
+            console.print(f"    [cyan]{idx}.[/cyan] @{aid}")
+        leader_choice = Prompt.ask(
+            "  Choose leader",
+            choices=[str(i) for i in range(1, len(selected_agents) + 1)],
+            default="1",
+        )
+        leader = selected_agents[int(leader_choice) - 1]
+
+    # Create and save
+    team_cfg = MultiAgentTeamConfig(
+        name=name,
+        agents=selected_agents,
+        leader_agent=leader,
+    )
+    config.agents.teams[team_id] = team_cfg
+    console.print(f"\n  [green]✓[/green] Team [cyan]@{team_id}[/cyan] created")
+    console.print(f"    Members: {', '.join(f'@{a}' for a in selected_agents)}")
+    console.print(f"    Leader: @{leader}")
+
+
+def _wizard_remove_agent(config, inquirer) -> None:
+    """Sub-wizard: remove an existing agent."""
+    agent_ids = list(config.agents.agents.keys())
+    if not agent_ids:
+        console.print("  [dim]No agents to remove.[/dim]")
+        return
+
+    console.print("\n[bold]Remove Agent[/bold]")
+
+    if inquirer is not None:
+        choices = [{"name": f"@{aid} — {config.agents.agents[aid].name or aid}", "value": aid} for aid in agent_ids]
+        try:
+            agent_id = inquirer.select(
+                message="Select agent to remove:",
+                choices=choices,
+            ).execute()
+        except (KeyboardInterrupt, EOFError):
+            return
+    else:
+        for idx, aid in enumerate(agent_ids, start=1):
+            console.print(f"  [cyan]{idx}.[/cyan] @{aid} — {config.agents.agents[aid].name or aid}")
+        choice = Prompt.ask(
+            "  Choose agent",
+            choices=[str(i) for i in range(1, len(agent_ids) + 1)],
+        )
+        agent_id = agent_ids[int(choice) - 1]
+
+    if not Confirm.ask(f"  Remove @{agent_id}?", default=False):
+        return
+
+    del config.agents.agents[agent_id]
+
+    # Remove from any teams
+    teams_to_remove = []
+    for tid, team in config.agents.teams.items():
+        if agent_id in team.agents:
+            team.agents.remove(agent_id)
+            if team.leader_agent == agent_id:
+                team.leader_agent = team.agents[0] if team.agents else ""
+            if len(team.agents) < 2:
+                teams_to_remove.append(tid)
+
+    for tid in teams_to_remove:
+        del config.agents.teams[tid]
+        console.print(f"  [yellow]Team @{tid} removed (not enough members)[/yellow]")
+
+    console.print(f"  [green]✓[/green] Agent @{agent_id} removed")
+
+
+def _wizard_remove_team(config, inquirer) -> None:
+    """Sub-wizard: remove an existing team."""
+    team_ids = list(config.agents.teams.keys())
+    if not team_ids:
+        console.print("  [dim]No teams to remove.[/dim]")
+        return
+
+    console.print("\n[bold]Remove Team[/bold]")
+
+    if inquirer is not None:
+        choices = [{"name": f"@{tid} — {config.agents.teams[tid].name or tid}", "value": tid} for tid in team_ids]
+        try:
+            team_id = inquirer.select(
+                message="Select team to remove:",
+                choices=choices,
+            ).execute()
+        except (KeyboardInterrupt, EOFError):
+            return
+    else:
+        for idx, tid in enumerate(team_ids, start=1):
+            console.print(f"  [cyan]{idx}.[/cyan] @{tid} — {config.agents.teams[tid].name or tid}")
+        choice = Prompt.ask(
+            "  Choose team",
+            choices=[str(i) for i in range(1, len(team_ids) + 1)],
+        )
+        team_id = team_ids[int(choice) - 1]
+
+    if not Confirm.ask(f"  Remove team @{team_id}?", default=False):
+        return
+
+    del config.agents.teams[team_id]
+    console.print(f"  [green]✓[/green] Team @{team_id} removed")
+    console.print(f"  [dim]Agents are not deleted — only the team is removed.[/dim]")
+
+
 def _get_module_statuses() -> list[tuple[str, str, str]]:
     """Get configuration status for each setup module.
 
@@ -837,6 +1201,15 @@ def _get_module_statuses() -> list[tuple[str, str, str]]:
     else:
         statuses.append(("Command Execution", "[red]✗[/red]", "[dim]disabled[/dim]"))
 
+    # 10. Multi-Agent
+    ma_agents = config.agents.agents
+    ma_teams = config.agents.teams
+    if ma_agents:
+        detail = f"{len(ma_agents)} agent(s), {len(ma_teams)} team(s)"
+        statuses.append(("Multi-Agent", "[green]✓[/green]", f"[dim]{detail}[/dim]"))
+    else:
+        statuses.append(("Multi-Agent", "[yellow]○[/yellow]", "[dim]single-agent mode[/dim]"))
+
     return statuses
 
 
@@ -863,6 +1236,7 @@ def setup_all() -> None:
         ("Discord Bot", setup_discord),
         ("Slack Bot", setup_slack),
         ("Command Execution", setup_exec),
+        ("Multi-Agent", setup_agents),
     ]
 
     # Build menu entries with status indicators

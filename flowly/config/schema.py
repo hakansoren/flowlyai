@@ -94,9 +94,27 @@ class AgentDefaults(BaseModel):
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
 
 
+class MultiAgentConfig(BaseModel):
+    """Single agent configuration for multi-agent orchestration."""
+    name: str = ""
+    provider: str = "anthropic"  # "anthropic", "openai", "flowly"
+    model: str = ""  # Short name ("sonnet", "opus") or full model ID
+    working_directory: str = ""  # Default: ~/.flowly/agents/{id}/
+    persona: str = ""
+
+
+class MultiAgentTeamConfig(BaseModel):
+    """Team of agents for chain collaboration."""
+    name: str = ""
+    agents: list[str] = Field(default_factory=list)
+    leader_agent: str = ""
+
+
 class AgentsConfig(BaseModel):
     """Agent configuration."""
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
+    agents: dict[str, MultiAgentConfig] = Field(default_factory=dict)
+    teams: dict[str, MultiAgentTeamConfig] = Field(default_factory=dict)
 
 
 class ProviderConfig(BaseModel):

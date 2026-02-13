@@ -1,0 +1,157 @@
+"""Delegate tool — allows main agent to delegate tasks to other agents.
+
+Runs agent subprocess in the background (fire-and-forget). The tool returns
+immediately so the main agent can respond to the user. When the subprocess
+completes, the result is automatically sent back to the user via the bus.
+"""
+
+import asyncio
+from pathlib import Path
+from typing import Any
+
+from loguru import logger
+
+from flowly.agent.tools.base import Tool
+from flowly.bus.events import InboundMessage, OutboundMessage
+from flowly.bus.queue import MessageBus
+from flowly.config.schema import MultiAgentConfig, MultiAgentTeamConfig
+from flowly.multiagent.invoke import invoke_agent, resolve_claude_model, resolve_codex_model
+
+
+class DelegateTool(Tool):
+    """Delegate a task to another configured agent.
+
+    This tool allows the main Flowly agent to invoke specialized agents
+    (Claude Code, Codex, etc.) for specific tasks. The agent subprocess
+    runs in the background — the tool returns immediately with an
+    acknowledgment, and the result is delivered asynchronously via the bus.
+    """
+
+    def __init__(
+        self,
+        agents: dict[str, MultiAgentConfig],
+        teams: dict[str, MultiAgentTeamConfig],
+        workspace: Path,
+        bus: MessageBus,
+    ):
+        self._agents = agents
+        self._teams = teams
+        self._workspace = workspace
+        self._bus = bus
+        # Current message context — set before each execution by the routing layer
+        self._channel: str = ""
+        self._chat_id: str = ""
+
+    def set_context(self, channel: str, chat_id: str) -> None:
+        """Set the current message context for async result delivery."""
+        self._channel = channel
+        self._chat_id = chat_id
+
+    @property
+    def name(self) -> str:
+        return "delegate_to"
+
+    def _resolve_model(self, cfg: MultiAgentConfig) -> str:
+        """Resolve short model name to full model ID for display."""
+        if cfg.provider == "anthropic":
+            return resolve_claude_model(cfg.model)
+        if cfg.provider == "openai":
+            return resolve_codex_model(cfg.model)
+        return cfg.model
+
+    @property
+    def description(self) -> str:
+        agent_list = ", ".join(
+            f"@{aid} ({cfg.name or aid}, {self._resolve_model(cfg)})"
+            for aid, cfg in self._agents.items()
+        )
+        return (
+            "Delegate a task to another specialized agent. "
+            "The task runs in the background — you will NOT receive the result in this turn. "
+            "Tell the user that the task has been delegated and they will receive the result shortly. "
+            f"Available agents: {agent_list}"
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        agent_ids = list(self._agents.keys())
+        return {
+            "type": "object",
+            "properties": {
+                "agent_id": {
+                    "type": "string",
+                    "description": f"Target agent ID. Available: {agent_ids}",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "The task or message to send to the agent.",
+                },
+            },
+            "required": ["agent_id", "message"],
+        }
+
+    async def execute(self, agent_id: str, message: str, **kwargs: Any) -> str:
+        """Delegate a task to the specified agent (fire-and-forget).
+
+        Starts the agent subprocess in the background and returns immediately.
+        When the subprocess completes, the result is sent via the bus.
+
+        Args:
+            agent_id: Target agent identifier.
+            message: Task/message for the agent.
+
+        Returns:
+            Immediate acknowledgment string (result comes async via bus).
+        """
+        if agent_id not in self._agents:
+            available = list(self._agents.keys())
+            return f"Error: Agent '{agent_id}' not found. Available agents: {available}"
+
+        agent = self._agents[agent_id]
+        model_display = self._resolve_model(agent)
+        logger.info(f"Delegating to @{agent_id}: {message[:80]}...")
+
+        # Capture context for the background task
+        channel = self._channel
+        chat_id = self._chat_id
+
+        async def _run_in_background() -> None:
+            try:
+                result = await invoke_agent(
+                    agent, agent_id, message, self._workspace, timeout=1800,
+                )
+                content = (
+                    f"[SYSTEM: Background task completed. @{agent_id} has finished. "
+                    f"Summarize the result below for the user in your own words.]\n\n"
+                    f"@{agent_id} result:\n{result}"
+                )
+            except Exception as e:
+                logger.error(f"Background delegation to @{agent_id} failed: {e}")
+                content = (
+                    f"[SYSTEM: Background task failed. @{agent_id} encountered an error. "
+                    f"Tell the user what happened.]\n\n"
+                    f"@{agent_id} error: {e}"
+                )
+
+            # Send result back through the agent (inbound) so the model
+            # processes it and responds in its own words
+            if channel and chat_id:
+                await self._bus.publish_inbound(
+                    InboundMessage(
+                        channel=channel,
+                        sender_id="system",
+                        chat_id=chat_id,
+                        content=content,
+                    )
+                )
+            else:
+                logger.warning(f"No message context for @{agent_id} result delivery")
+
+        # Fire-and-forget
+        asyncio.create_task(_run_in_background())
+
+        return (
+            f"Task delegated to @{agent_id} ({agent.name or agent_id}, {model_display}). "
+            f"The agent is now working in the background. "
+            f"The result will be delivered automatically when the agent finishes."
+        )
