@@ -22,6 +22,7 @@ You (Telegram) → Flowly (your Mac/PC) → tools, files, APIs → response
 
 - **Runs on your machine** — your data stays local, your tools stay private
 - **Always on** — install as a background service, survives terminal close and reboot
+- **Multi-agent** — create custom agents backed by Claude Code or Codex, build teams, delegate tasks
 - **Multi-channel** — one agent, reachable from Telegram, WhatsApp, Discord, Slack
 - **Voice calls** — answer phone calls with Twilio, talk with real-time STT/TTS
 - **Extensible** — add tools, skills, personas, or entire channel adapters
@@ -95,6 +96,84 @@ flowly gateway                        # Start all channels
 └─────────────────────────────────────────────┘
 ```
 
+## Multi-Agent
+
+Flowly can delegate tasks to external AI agents like [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex](https://github.com/openai/codex). Each agent runs as a CLI subprocess in the background — Flowly sends the task, responds to you immediately, and delivers the result when the agent finishes.
+
+### Setup
+
+```bash
+flowly setup agents    # Interactive wizard — add agents, create teams
+```
+
+Or edit `~/.flowly/config.json` directly:
+
+```json
+{
+  "agents": {
+    "defaults": { "model": "anthropic/claude-sonnet-4-5" },
+    "agents": {
+      "coder": {
+        "name": "Code Assistant",
+        "provider": "anthropic",
+        "model": "sonnet"
+      },
+      "reviewer": {
+        "name": "Code Reviewer",
+        "provider": "openai",
+        "model": "gpt-5.3-codex"
+      }
+    },
+    "teams": {
+      "dev": {
+        "name": "Development Team",
+        "agents": ["coder", "reviewer"],
+        "leaderAgent": "coder"
+      }
+    }
+  }
+}
+```
+
+**Requirements:** Install the CLI tool for each provider:
+
+| Provider | CLI Required | Short model names |
+|----------|-------------|-------------------|
+| `anthropic` | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`) | `sonnet`, `opus`, `haiku` |
+| `openai` | [Codex](https://github.com/openai/codex) (`codex`) | `gpt-5.3-codex`, `gpt-5.2` |
+
+### Usage
+
+**`@mention`** — prefix your message with `@agent_id` to talk to a specific agent:
+
+```
+@coder fix the login bug in auth.py
+@reviewer review the last PR
+```
+
+**`@team`** — mention a team name to reach its leader agent:
+
+```
+@dev fix the auth bug       → routes to "coder" (team leader)
+```
+
+**Natural language** — or just ask Flowly, and it decides whether to delegate:
+
+```
+You: build me a todo app with Flask
+Flowly: I'll delegate this to @coder...
+         [coder works in the background — you can keep chatting]
+Flowly: @coder finished! Here's what was built: ...
+```
+
+### How It Works
+
+1. **Routing**: `@mention` messages are rewritten so the main Flowly agent calls the `delegate_to` tool. Messages without `@` go to the default Flowly agent, which can also choose to delegate on its own.
+2. **Fire-and-forget**: The `delegate_to` tool starts a CLI subprocess in the background and returns immediately — you can keep chatting while the agent works.
+3. **Result delivery**: When the subprocess finishes, the result is sent back through the main agent (via the message bus), which summarizes it for you.
+4. **Loop prevention**: Delegate results are marked with `[DELEGATE_RESULT:]` — when processing these, the `delegate_to` tool is temporarily removed to prevent infinite re-delegation.
+5. **Working directory**: Agents run in your home directory by default (or a custom `workingDirectory` from config), with teammate info injected via `--append-system-prompt`.
+
 ## Built-in Tools
 
 | Tool | What it does |
@@ -111,6 +190,7 @@ flowly gateway                        # Start all channels
 | **System** | CPU, memory, disk, process monitoring |
 | **Voice** | Make and receive phone calls via Twilio |
 | **Message** | Send messages across channels |
+| **Delegate** | Delegate tasks to other agents (Claude Code, Codex, etc.) |
 | **Spawn** | Run background sub-agents |
 
 ## Channels
@@ -353,6 +433,7 @@ flowly gateway            # Start with voice enabled
 Setup & Config
   flowly onboard                   Initialize config & workspace
   flowly setup                     Interactive setup wizard
+  flowly setup agents              Configure multi-agent (add agents, teams)
   flowly status                    Overall system status
 
 Agent
@@ -416,6 +497,13 @@ All config lives in `~/.flowly/config.json` (camelCase keys):
       "maxTokens": 16384,
       "temperature": 0.7,
       "persona": "default"
+    },
+    "agents": {
+      "coder": { "provider": "anthropic", "model": "sonnet" },
+      "reviewer": { "provider": "openai", "model": "gpt-5.3-codex" }
+    },
+    "teams": {
+      "dev": { "agents": ["coder", "reviewer"], "leaderAgent": "coder" }
     }
   },
   "channels": {
@@ -453,7 +541,8 @@ All config lives in `~/.flowly/config.json` (camelCase keys):
 ```
 flowly/
 ├── agent/              # Core agent loop, context, memory
-│   └── tools/          # Built-in tools (shell, web, file, cron, ...)
+│   └── tools/          # Built-in tools (shell, web, file, cron, delegate, ...)
+├── multiagent/         # Multi-agent orchestration (router, invoker, orchestrator)
 ├── channels/           # Chat platform adapters (Telegram, Discord, ...)
 ├── providers/          # LLM provider abstraction (LiteLLM)
 ├── cli/                # CLI commands and setup wizard
@@ -491,6 +580,18 @@ Please open an issue first for large changes.
 ---
 
 ## Changelog
+
+<details>
+<summary><strong>2026-02-11</strong> — Multi-Agent Orchestration (v1.0.0)</summary>
+
+- Multi-agent system: delegate tasks to Claude Code, Codex, or any CLI agent
+- `@mention` routing — `@coder fix bug` sends directly to the agent
+- Team chains and fan-out — agents hand off work to teammates
+- `delegate_to` tool — main agent can delegate via tool call (fire-and-forget)
+- Interactive setup wizard: `flowly setup agents`
+- Agent working directories with auto-generated teammate config
+
+</details>
 
 <details>
 <summary><strong>2026-02-11</strong> — X API, command execution setup, Apache 2.0</summary>
