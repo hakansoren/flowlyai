@@ -9,6 +9,15 @@ from loguru import logger
 from flowly.config.schema import MultiAgentConfig
 
 
+# CLI install hints for error messages
+INSTALL_HINTS = {
+    "claude": "npm install -g @anthropic-ai/claude-code",
+    "codex": "npm install -g @openai/codex",
+    "gemini": "npm install -g @anthropic-ai/gemini-cli",
+    "opencode": "brew install opencode  OR  go install github.com/opencode-ai/opencode@latest",
+    "droid": "npm install -g @anthropic-ai/factory",
+}
+
 # Short name → full model ID mappings
 CLAUDE_MODELS = {
     "sonnet": "claude-sonnet-4-5",
@@ -126,6 +135,24 @@ async def invoke_agent(
             message,
         ])
 
+    elif provider == "gemini":
+        args = ["gemini"]
+        if agent.model:
+            args.extend(["--model", agent.model])
+        args.extend(["-p", message])
+
+    elif provider == "opencode":
+        args = ["opencode", "run"]
+        if agent.model:
+            args.extend(["--model", agent.model])
+        args.append(message)
+
+    elif provider == "droid":
+        args = ["droid", "exec", "--auto", "high"]
+        if agent.model:
+            args.extend(["--model", agent.model])
+        args.append(message)
+
     else:
         raise ValueError(f"Unsupported provider: {provider}")
 
@@ -162,10 +189,8 @@ async def run_subprocess(
         )
     except FileNotFoundError:
         cmd = args[0]
-        raise RuntimeError(
-            f"Command '{cmd}' not found. "
-            f"Install it first: {'npm install -g @anthropic-ai/claude-code' if cmd == 'claude' else 'npm install -g @openai/codex'}"
-        )
+        hint = INSTALL_HINTS.get(cmd, f"install '{cmd}' and make sure it's in your PATH")
+        raise RuntimeError(f"Command '{cmd}' not found. Install it first: {hint}")
 
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)

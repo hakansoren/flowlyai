@@ -98,7 +98,7 @@ flowly gateway                        # Start all channels
 
 ## Multi-Agent
 
-Flowly can delegate tasks to external AI agents like [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex](https://github.com/openai/codex). Each agent runs as a CLI subprocess in the background — Flowly sends the task, responds to you immediately, and delivers the result when the agent finishes.
+Flowly can delegate tasks to external AI agents like [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [OpenCode](https://github.com/opencode-ai/opencode), or [Droid](https://github.com/Factory-AI/factory). Each agent runs as a CLI subprocess in the background — Flowly sends the task, responds to you immediately, and delivers the result when the agent finishes.
 
 ### Setup
 
@@ -137,10 +137,13 @@ Or edit `~/.flowly/config.json` directly:
 
 **Requirements:** Install the CLI tool for each provider:
 
-| Provider | CLI Required | Short model names |
-|----------|-------------|-------------------|
+| Provider | CLI Required | Model names |
+|----------|-------------|-------------|
 | `anthropic` | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`) | `sonnet`, `opus`, `haiku` |
 | `openai` | [Codex](https://github.com/openai/codex) (`codex`) | `gpt-5.3-codex`, `gpt-5.2` |
+| `gemini` | [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`) | `gemini-3-pro`, `gemini-3-flash`, `gemini-2.5-pro`, `gemini-2.5-flash` |
+| `opencode` | [OpenCode](https://github.com/opencode-ai/opencode) (`opencode`) | `anthropic/claude-sonnet-4-5`, `openai/gpt-4o`, ... |
+| `droid` | [Droid](https://github.com/Factory-AI/factory) (`droid`) | `opus`, `sonnet`, `gpt-5` |
 
 ### Usage
 
@@ -584,7 +587,7 @@ Please open an issue first for large changes.
 <details>
 <summary><strong>2026-02-11</strong> — Multi-agent, X API, command execution (v1.0.0)</summary>
 
-- Multi-agent delegation: send tasks to Claude Code or Codex via `@mention` or `delegate_to` tool
+- Multi-agent delegation: send tasks to Claude Code, Codex, Gemini CLI, OpenCode, or Droid via `@mention` or `delegate_to` tool
 - Fire-and-forget execution — agents run in background, results delivered asynchronously
 - Interactive agent setup wizard: `flowly setup agents`
 - X (Twitter) API integration (post, search, timeline, profiles)

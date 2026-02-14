@@ -895,9 +895,13 @@ def _wizard_add_agent(config, inquirer) -> None:
     console.print("\n  [bold]Provider:[/bold]")
     console.print("    [cyan]1.[/cyan] Anthropic (Claude Code) [dim](recommended)[/dim]")
     console.print("    [cyan]2.[/cyan] OpenAI (Codex)")
+    console.print("    [cyan]3.[/cyan] Google (Gemini CLI)")
+    console.print("    [cyan]4.[/cyan] OpenCode")
+    console.print("    [cyan]5.[/cyan] Factory (Droid)")
 
-    provider_choice = Prompt.ask("  Choose provider", choices=["1", "2"], default="1")
-    provider = "anthropic" if provider_choice == "1" else "openai"
+    provider_choice = Prompt.ask("  Choose provider", choices=["1", "2", "3", "4", "5"], default="1")
+    provider_map = {"1": "anthropic", "2": "openai", "3": "gemini", "4": "opencode", "5": "droid"}
+    provider = provider_map[provider_choice]
 
     # Model
     if provider == "anthropic":
@@ -913,7 +917,7 @@ def _wizard_add_agent(config, inquirer) -> None:
             model = Prompt.ask("  Enter model name").strip()
         else:
             model = model_map[model_choice]
-    else:
+    elif provider == "openai":
         console.print("\n  [bold]Codex model:[/bold]")
         console.print("    [cyan]1.[/cyan] gpt-5.3-codex [dim](recommended)[/dim]")
         console.print("    [cyan]2.[/cyan] gpt-5.2")
@@ -925,6 +929,47 @@ def _wizard_add_agent(config, inquirer) -> None:
             model = Prompt.ask("  Enter model name").strip()
         else:
             model = model_map[model_choice]
+    elif provider == "gemini":
+        console.print("\n  [bold]Gemini model:[/bold]")
+        console.print("    [cyan]1.[/cyan] gemini-3-pro   [dim](recommended)[/dim]")
+        console.print("    [cyan]2.[/cyan] gemini-3-flash [dim](fast)[/dim]")
+        console.print("    [cyan]3.[/cyan] gemini-2.5-pro")
+        console.print("    [cyan]4.[/cyan] gemini-2.5-flash")
+        console.print("    [cyan]5.[/cyan] custom")
+
+        model_choice = Prompt.ask("  Choose model", choices=["1", "2", "3", "4", "5"], default="1")
+        model_map = {"1": "gemini-3-pro", "2": "gemini-3-flash", "3": "gemini-2.5-pro", "4": "gemini-2.5-flash"}
+        if model_choice == "5":
+            model = Prompt.ask("  Enter model name").strip()
+        else:
+            model = model_map[model_choice]
+    elif provider == "opencode":
+        console.print("\n  [bold]OpenCode model:[/bold] [dim](provider/model format)[/dim]")
+        console.print("    [cyan]1.[/cyan] anthropic/claude-sonnet-4-5 [dim](recommended)[/dim]")
+        console.print("    [cyan]2.[/cyan] openai/gpt-4o")
+        console.print("    [cyan]3.[/cyan] custom")
+
+        model_choice = Prompt.ask("  Choose model", choices=["1", "2", "3"], default="1")
+        model_map = {"1": "anthropic/claude-sonnet-4-5", "2": "openai/gpt-4o"}
+        if model_choice == "3":
+            model = Prompt.ask("  Enter model name (provider/model)").strip()
+        else:
+            model = model_map[model_choice]
+    elif provider == "droid":
+        console.print("\n  [bold]Droid model:[/bold]")
+        console.print("    [cyan]1.[/cyan] opus   [dim](recommended)[/dim]")
+        console.print("    [cyan]2.[/cyan] sonnet")
+        console.print("    [cyan]3.[/cyan] gpt-5")
+        console.print("    [cyan]4.[/cyan] custom")
+
+        model_choice = Prompt.ask("  Choose model", choices=["1", "2", "3", "4"], default="1")
+        model_map = {"1": "opus", "2": "sonnet", "3": "gpt-5"}
+        if model_choice == "4":
+            model = Prompt.ask("  Enter model name").strip()
+        else:
+            model = model_map[model_choice]
+    else:
+        model = Prompt.ask("  Enter model name").strip()
 
     # Working directory (optional)
     default_dir = f"~/.flowly/agents/{agent_id}"
